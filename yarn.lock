@@ -1056,17 +1056,17 @@
     jsonc-parser "3.3.1"
     pluralize "8.0.0"
 
-"@nestjs/swagger@^11.2.0":
-  version "11.2.0"
-  resolved "https://registry.yarnpkg.com/@nestjs/swagger/-/swagger-11.2.0.tgz#a1b10620a9f90c78edf897a9386dc4f3e014387e"
-  integrity sha512-5wolt8GmpNcrQv34tIPUtPoV1EeFbCetm40Ij3+M0FNNnf2RJ3FyWfuQvI8SBlcJyfaounYVTKzKHreFXsUyOg==
+"@nestjs/swagger@^11.2.1":
+  version "11.2.1"
+  resolved "https://registry.yarnpkg.com/@nestjs/swagger/-/swagger-11.2.1.tgz#590047ed74e4c8417f0b0f0260d04eea9a1d7daf"
+  integrity sha512-1MS7xf0pzc1mofG53xrrtrurnziafPUHkqzRm4YUVPA/egeiMaSerQBD/feiAeQ2BnX0WiLsTX4HQFO0icvOjQ==
   dependencies:
     "@microsoft/tsdoc" "0.15.1"
     "@nestjs/mapped-types" "2.1.0"
     js-yaml "4.1.0"
     lodash "4.17.21"
-    path-to-regexp "8.2.0"
-    swagger-ui-dist "5.21.0"
+    path-to-regexp "8.3.0"
+    swagger-ui-dist "5.29.4"
 
 "@nestjs/testing@^11.0.1":
   version "11.1.6"
@@ -1147,10 +1147,10 @@
   resolved "https://registry.yarnpkg.com/@shopify/graphql-client/-/graphql-client-1.4.1.tgz#794d9964bbacabc4a15573c0aaf7c56e7a9a3534"
   integrity sha512-/w4Uchx8ueI8gwmJd1ZbbIGndsjfMEFlzmay3P7rya5zj7K308xne/ggIvWDweueIut2qf1A8lI58xQl9Pu22w==
 
-"@shopify/shopify-api@^12.0.0":
-  version "12.0.0"
-  resolved "https://registry.yarnpkg.com/@shopify/shopify-api/-/shopify-api-12.0.0.tgz#06fcfcbef2966174107a435f1a3adb9517f5f241"
-  integrity sha512-YBazRd23xBX6iFGD6RjqiNLGIF/XoAjx3+1VJLeJu5m1hEkyT6CUeSWSjx43kxn7bDx9uVN5Ebu8JRX0UIgkkQ==
+"@shopify/shopify-api@^12.1.0":
+  version "12.1.0"
+  resolved "https://registry.yarnpkg.com/@shopify/shopify-api/-/shopify-api-12.1.0.tgz#8dd8eb92c8083e812dbe2102809d4ac52529a162"
+  integrity sha512-dO87e+vZ2PzXa5mr1QioZRmGMEvM9XJebphk05IpeebPrVkNWl+e2y8F4XlcpChZkqdUe0OWVMuLfP0PGN6J1A==
   dependencies:
     "@shopify/admin-api-client" "^1.1.1"
     "@shopify/graphql-client" "^1.4.1"
@@ -2090,10 +2090,10 @@ available-typed-arrays@^1.0.7:
   dependencies:
     possible-typed-array-names "^1.0.0"
 
-axios@^1.12.2:
-  version "1.12.2"
-  resolved "https://registry.yarnpkg.com/axios/-/axios-1.12.2.tgz#6c307390136cf7a2278d09cec63b136dfc6e6da7"
-  integrity sha512-vMJzPewAlRyOgxV2dU0Cuz2O8zzzx9VYtbJOaBgXFeLc4IV/Eg50n4LowmehOOR61S8ZMpc2K5Sa7g6A4jfkUw==
+axios@^1.13.0:
+  version "1.13.0"
+  resolved "https://registry.yarnpkg.com/axios/-/axios-1.13.0.tgz#ead6f495f41f9c8869dcf7b0f24f5a4ab89707f0"
+  integrity sha512-zt40Pz4zcRXra9CVV31KeyofwiNvAbJ5B6YPz9pMJ+yOSLikvPT4Yi5LjfgjRa9CawVYBaD1JQzIVcIvBejKeA==
   dependencies:
     follow-redirects "^1.15.6"
     form-data "^4.0.4"
@@ -4776,7 +4776,7 @@ path-to-regexp@8.2.0:
   resolved "https://registry.yarnpkg.com/path-to-regexp/-/path-to-regexp-8.2.0.tgz#73990cc29e57a3ff2a0d914095156df5db79e8b4"
   integrity sha512-TdrF7fW9Rphjq4RjrW0Kp2AW0Ahwu9sRGTkS6bvDi0SCwZlEZYmcfDbEsTz8RVk0EHIS/Vd1bv3JhG+1xZuAyQ==
 
-path-to-regexp@^8.0.0:
+path-to-regexp@8.3.0, path-to-regexp@^8.0.0:
   version "8.3.0"
   resolved "https://registry.yarnpkg.com/path-to-regexp/-/path-to-regexp-8.3.0.tgz#aa818a6981f99321003a08987d3cec9c3474cd1f"
   integrity sha512-7jdwVIRtsP8MYpdXSwOS0YdD0Du+qOoF/AEPIt88PcCFrZCzx41oxku1jD88hZBwbNUIEfpqvuhjFaMAqMTWnA==
@@ -5557,10 +5557,10 @@ supports-preserve-symlinks-flag@^1.0.0:
   resolved "https://registry.yarnpkg.com/supports-preserve-symlinks-flag/-/supports-preserve-symlinks-flag-1.0.0.tgz#6eda4bd344a3c94aea376d4cc31bc77311039e09"
   integrity sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==
 
-swagger-ui-dist@5.21.0:
-  version "5.21.0"
-  resolved "https://registry.yarnpkg.com/swagger-ui-dist/-/swagger-ui-dist-5.21.0.tgz#aed230fe6e294c9470217e67697d601e3bb8eb9d"
-  integrity sha512-E0K3AB6HvQd8yQNSMR7eE5bk+323AUxjtCz/4ZNKiahOlPhPJxqn3UPIGs00cyY/dhrTDJ61L7C/a8u6zhGrZg==
+swagger-ui-dist@5.29.4:
+  version "5.29.4"
+  resolved "https://registry.yarnpkg.com/swagger-ui-dist/-/swagger-ui-dist-5.29.4.tgz#ba86ff7e18b6b23eecfc32a81220f032d748b468"
+  integrity sha512-gJFDz/gyLOCQtWwAgqs6Rk78z9ONnqTnlW11gimG9nLap8drKa3AJBKpzIQMIjl5PD2Ix+Tn+mc/tfoT2tgsng==
   dependencies:
     "@scarf/scarf" "=1.4.0"
 

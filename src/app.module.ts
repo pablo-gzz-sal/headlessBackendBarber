@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ShopifyModule } from './integrations/shopify/shopify.module';
+import { MangomintModule } from './integrations/mangomint/mangomint.module';
 
 @Module({
   imports: [
@@ -18,11 +19,12 @@ import { ShopifyModule } from './integrations/shopify/shopify.module';
         password: config.get('DB_PASSWORD'),
         database: config.get('DB_NAME'),
         autoLoadEntities: true,
-        synchronize: true, // ❗Disable in production, use migrations instead
+        synchronize: true, 
       }),
     }),
 
     ShopifyModule,
+    MangomintModule
   ],
 })
 export class AppModule {}
