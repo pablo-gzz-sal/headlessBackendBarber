@@ -1,12 +1,24 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 import { ShopifyModule } from './integrations/shopify/shopify.module';
 import { MangomintModule } from './integrations/mangomint/mangomint.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({ 
+      isGlobal: true,
+      envFilePath: '.env',
+    }),
+
+    // Rate limiting
+    ThrottlerModule.forRoot([{
+      ttl: 60000, // 60 seconds
+      limit: 100, // 100 requests per TTL
+    }]),
 
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -19,12 +31,20 @@ import { MangomintModule } from './integrations/mangomint/mangomint.module';
         password: config.get('DB_PASSWORD'),
         database: config.get('DB_NAME'),
         autoLoadEntities: true,
-        synchronize: true, 
+        synchronize: config.get('NODE_ENV') !== 'production',
+        logging: config.get('NODE_ENV') === 'development',
       }),
     }),
 
     ShopifyModule,
-    MangomintModule
+    MangomintModule,
+    HealthModule,
+  ],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
 })
 export class AppModule {}
