@@ -49,3 +49,4 @@ Contact your development team if you need:
 - New collection types
 - Custom sorting
 - Special filtering rules
+    
