@@ -6,6 +6,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ShopifyModule } from './integrations/shopify/shopify.module';
 import { MangomintModule } from './integrations/mangomint/mangomint.module';
 import { HealthModule } from './health/health.module';
+import { CustomerAuthModule } from './modules/customer-auth/customer-auth.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { HealthModule } from './health/health.module';
     ShopifyModule,
     MangomintModule,
     HealthModule,
+    CustomerAuthModule,
   ],
   providers: [
     {
