@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   DefaultValuePipe,
   Delete,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -16,6 +17,8 @@ import {
   ApiResponse,
   ApiParam,
   ApiQuery,
+  ApiBody,
+  ApiConsumes,
 } from '@nestjs/swagger';
 import { ShopifyService } from './shopify.service';
 import { ProductQueryDto } from './dto/product-query.dto';
@@ -27,6 +30,7 @@ import { CreateGiftCardDto } from './dto/gift-card.dto';
 import { RecommendationQueryDto } from './dto/recommendation-query.dto';
 import { CreateSmartCollectionDto } from './dto/smart-collection.dto';
 import { CreateMetafieldDto } from './dto/metafield.dto';
+import { FeaturedProductsDto } from './dto/featured-products.dto';
 
 @ApiTags('Shopify')
 @Controller('shopify')
@@ -455,16 +459,16 @@ export class ShopifyController {
     description:
       'Get products from multiple collections at once (perfect for homepage sections)',
   })
+  @ApiBody({ type: FeaturedProductsDto })
   @ApiResponse({
     status: 200,
     description: 'Featured products retrieved successfully',
   })
-  async getFeaturedProducts(
-    @Body() body: { collections: string[]; limitPerCollection?: number },
-  ) {
+  async getFeaturedProducts(@Body() dto: FeaturedProductsDto) {
+    const limit = dto.limitPerCollection ?? 4;
     return this.shopifyService.getProductsFromMultipleCollections(
-      body.collections,
-      body.limitPerCollection || 4,
+      dto.collections,
+      limit,
     );
   }
 
@@ -544,5 +548,37 @@ export class ShopifyController {
     @Body() metafieldData: CreateMetafieldDto,
   ) {
     return this.shopifyService.createProductMetafield(id, metafieldData);
+  }
+
+  // ==================== SALE ====================
+
+  @Get('sale')
+  @ApiOperation({
+    summary: 'Get sale products',
+    description:
+      'Returns products that have at least one variant with compare_at_price > price',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Max items (default 20)',
+  })
+  @ApiQuery({
+    name: 'minDiscount',
+    required: false,
+    type: Number,
+    description: 'Minimum discount percent (default 0)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Sale products retrieved successfully',
+  })
+  async getSaleProducts(
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query('minDiscount', new DefaultValuePipe(0), ParseIntPipe)
+    minDiscount: number,
+  ) {
+    return this.shopifyService.getSaleProducts(limit, minDiscount);
   }
 }

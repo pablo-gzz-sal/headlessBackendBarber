@@ -1017,4 +1017,92 @@ export class ShopifyService {
       throw new InternalServerErrorException('Failed to calculate bestsellers');
     }
   }
+
+  // ==================== SALE ====================
+
+  /**
+   * Get sale products (variant.compare_at_price > variant.price)
+   */
+  async getSaleProducts(limit = 20, minDiscount = 0) {
+    const client = new this.shopify.clients.Rest({ session: this.session });
+
+    // 1) Try compare_at_price logic
+    const res = await client.get({
+      path: 'products',
+      query: { limit: 250, status: 'active' },
+    });
+
+    const products = res.body['products'] ?? [];
+
+    const sale = products
+      .map((p) => {
+        const variants = Array.isArray(p?.variants) ? p.variants : [];
+
+        let bestDiscountPct = -1;
+        let bestPrice: number | null = null;
+        let bestCompareAt: number | null = null;
+
+        for (const v of variants) {
+          const price = Number(v?.price);
+          const compareAt = Number(v?.compare_at_price);
+
+          if (!Number.isFinite(price) || !Number.isFinite(compareAt)) continue;
+          if (compareAt <= price) continue;
+
+          const pct = ((compareAt - price) / compareAt) * 100;
+
+          if (pct > bestDiscountPct) {
+            bestDiscountPct = pct;
+            bestPrice = price;
+            bestCompareAt = compareAt;
+          }
+        }
+
+        if (bestDiscountPct < 0) return null;
+        if (bestDiscountPct < minDiscount) return null;
+
+        return {
+          ...p,
+          sale_data: {
+            best_price: bestPrice,
+            best_compare_at_price: bestCompareAt,
+            discount_percent: Number(bestDiscountPct.toFixed(2)),
+          },
+        };
+      })
+      .filter(Boolean)
+      .sort(
+        (a: any, b: any) =>
+          (b.sale_data?.discount_percent ?? 0) -
+          (a.sale_data?.discount_percent ?? 0),
+      )
+      .slice(0, limit);
+
+    // 2) Fallback to a Sale collection if no compare-at sales exist
+    if (sale.length === 0) {
+      // change handle if your collection uses a different handle
+      const handle = 'sale';
+
+      try {
+        const fromCollection = await this.getCollectionByHandle(
+          handle,
+        );
+        return {
+          sale: fromCollection,
+          count: fromCollection.length,
+          minDiscount,
+          source: `collection:${handle}`,
+        };
+      } catch {
+        // ignore fallback errors and return empty
+      }
+    }
+
+    return {
+      sale,
+      count: sale.length,
+      minDiscount,
+      source: 'compare_at_price',
+    };
+  }
 }
