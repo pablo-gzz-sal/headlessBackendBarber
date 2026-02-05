@@ -6,6 +6,8 @@ import { CustomerAuthService } from './customer-auth.service';
 export class CustomerAuthController {
   constructor(private readonly auth: CustomerAuthService) {}
 
+  isProd = process.env.NODE_ENV === 'production';
+
   @Get('login')
   async login(@Res() res: Response) {
     const openid = await this.auth.getOpenIdConfig();
@@ -55,7 +57,7 @@ export class CustomerAuthController {
     // Store tokens securely (httpOnly cookies)
     res.cookie('shopify_customer_access_token', tokens.access_token, {
       httpOnly: true,
-      secure: true,
+      secure: this.isProd,
       sameSite: 'lax',
       maxAge: 60 * 60 * 1000, // 1h (adjust if you want)
     });
@@ -63,7 +65,7 @@ export class CustomerAuthController {
     if (tokens.refresh_token) {
       res.cookie('shopify_customer_refresh_token', tokens.refresh_token, {
         httpOnly: true,
-        secure: true,
+        secure: this.isProd,
         sameSite: 'lax',
         maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
       });
@@ -84,4 +86,5 @@ export class CustomerAuthController {
     res.clearCookie('shopify_customer_refresh_token');
     return res.redirect(`${process.env.APP_URL}`);
   }
+  
 }

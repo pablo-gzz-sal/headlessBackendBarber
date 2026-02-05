@@ -1,4 +1,4 @@
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 import { Injectable } from '@nestjs/common';
 
 function base64Url(buf: Buffer) {
@@ -13,8 +13,9 @@ export class CustomerAuthService {
   private shopId = process.env.SHOPIFY_CUSTOMER_SHOP_ID!;
   private clientId = process.env.SHOPIFY_CUSTOMER_CLIENT_ID!;
   private appUrl = process.env.APP_URL!; // https://YOUR_APP_DOMAIN
+   private shopDomain = process.env.SHOP_STOREFRONT_DOMAIN!
 
-  private discoveryUrl = `https://shopify.com/authentication/${this.shopId}/.well-known/openid-configuration`;
+private discoveryUrl = `https://${this.shopDomain}/.well-known/openid-configuration`;
 
   async getOpenIdConfig() {
     const res = await fetch(this.discoveryUrl);

@@ -1084,9 +1084,7 @@ export class ShopifyService {
       const handle = 'sale';
 
       try {
-        const fromCollection = await this.getCollectionByHandle(
-          handle,
-        );
+        const fromCollection = await this.getCollectionByHandle(handle);
         return {
           sale: fromCollection,
           count: fromCollection.length,
@@ -1103,6 +1101,106 @@ export class ShopifyService {
       count: sale.length,
       minDiscount,
       source: 'compare_at_price',
+    };
+  }
+
+  // ==================== VARIANTS ====================
+
+  async getProductVariants(productId: string) {
+    try {
+      const client = new this.shopify.clients.Rest({ session: this.session });
+
+      this.logger.log(`Fetching variants for product ID: ${productId}`);
+
+      const response = await client.get({ path: `products/${productId}` });
+
+      const product = response.body['product'];
+      if (!product) {
+        throw new NotFoundException(`Product with ID ${productId} not found`);
+      }
+
+      const variants = product.variants || [];
+
+      // Return a clean DTO-like shape for frontend
+      return {
+        productId: String(product.id),
+        count: variants.length,
+        variants: variants.map((v) => ({
+          id: String(v.id),
+          title: v.title,
+          price: v.price,
+          sku: v.sku,
+          option1: v.option1,
+          option2: v.option2,
+          option3: v.option3,
+          inventory_quantity: v.inventory_quantity,
+          image_id: v.image_id,
+          admin_graphql_api_id: v.admin_graphql_api_id,
+        })),
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      this.logger.error('Failed to fetch product variants:', error.message);
+      throw new InternalServerErrorException(
+        'Failed to fetch product variants',
+      );
+    }
+  }
+
+  async getVariantById(variantId: string) {
+    try {
+      const client = new this.shopify.clients.Rest({ session: this.session });
+
+      this.logger.log(`Fetching variant by ID: ${variantId}`);
+
+      // Shopify REST supports: GET /variants/{variant_id}.json
+      const response = await client.get({ path: `variants/${variantId}` });
+
+      const variant = response.body['variant'];
+      if (!variant) {
+        throw new NotFoundException(`Variant with ID ${variantId} not found`);
+      }
+
+      return variant;
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      this.logger.error('Failed to fetch variant:', error.message);
+      throw new InternalServerErrorException('Failed to fetch variant details');
+    }
+  }
+
+  /**
+   * Resolve a variantId for a product by matching option1 (or title).
+   * Example: option1="7.1 BLONDE ASH"
+   */
+  async resolveVariantId(productId: string, option1?: string, title?: string) {
+    if (!option1 && !title) {
+      throw new BadRequestException(
+        'Provide option1 or title to resolve variant',
+      );
+    }
+
+    const data = await this.getProductVariants(productId);
+
+    const found = data.variants.find((v) => {
+      const matchOption = option1
+        ? String(v.option1) === String(option1)
+        : false;
+      const matchTitle = title ? String(v.title) === String(title) : false;
+      return matchOption || matchTitle;
+    });
+
+    if (!found) {
+      throw new NotFoundException(
+        `No variant found for product ${productId} using option1/title`,
+      );
+    }
+
+    return {
+      productId: String(productId),
+      variantId: String(found.id),
+      title: found.title,
+      price: found.price,
     };
   }
 }

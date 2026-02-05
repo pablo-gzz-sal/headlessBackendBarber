@@ -581,4 +581,64 @@ export class ShopifyController {
   ) {
     return this.shopifyService.getSaleProducts(limit, minDiscount);
   }
+
+  // ==================== VARIANTS ====================
+
+  @Get('products/:id/variants')
+  @ApiOperation({
+    summary: 'Get variants for a product',
+    description:
+      'Returns a simplified list of variants for a product (id/title/price/etc).',
+  })
+  @ApiParam({ name: 'id', description: 'Product ID', type: String })
+  @ApiResponse({ status: 200, description: 'Variants retrieved successfully' })
+  @ApiResponse({ status: 404, description: 'Product not found' })
+  async getProductVariants(@Param('id') id: string) {
+    return this.shopifyService.getProductVariants(id);
+  }
+
+  @Get('variants/:variantId')
+  @ApiOperation({
+    summary: 'Get variant by ID',
+    description: 'Fetch a single variant by its Shopify variant ID.',
+  })
+  @ApiParam({ name: 'variantId', description: 'Variant ID', type: String })
+  @ApiResponse({ status: 200, description: 'Variant retrieved successfully' })
+  @ApiResponse({ status: 404, description: 'Variant not found' })
+  async getVariantById(@Param('variantId') variantId: string) {
+    return this.shopifyService.getVariantById(variantId);
+  }
+
+  @Get('products/:id/variant-id')
+  @ApiOperation({
+    summary: 'Resolve variantId for a product',
+    description:
+      'Resolve the correct variantId for a product by option1 or variant title. Useful for carts.',
+  })
+  @ApiParam({ name: 'id', description: 'Product ID', type: String })
+  @ApiQuery({
+    name: 'option1',
+    required: false,
+    type: String,
+    description: 'Match variant option1 (ex: "7.1 BLONDE ASH")',
+  })
+  @ApiQuery({
+    name: 'title',
+    required: false,
+    type: String,
+    description: 'Match variant title (ex: "7.1 BLONDE ASH")',
+  })
+  @ApiResponse({ status: 200, description: 'Variant ID resolved successfully' })
+  @ApiResponse({
+    status: 400,
+    description: 'Missing option1/title query param',
+  })
+  @ApiResponse({ status: 404, description: 'Variant not found for product' })
+  async resolveVariantId(
+    @Param('id') id: string,
+    @Query('option1') option1?: string,
+    @Query('title') title?: string,
+  ) {
+    return this.shopifyService.resolveVariantId(id, option1, title);
+  }
 }
