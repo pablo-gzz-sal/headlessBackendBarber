@@ -47,7 +47,11 @@ services:
         sync: false
       - key: SHOPIFY_API_SECRET_KEY
         sync: false
+      - key: SHOPIFY_STOREFRONT_TOKEN
+        sync: false
       - key: SHOPIFY_STOREFRONT_ACCESS_TOKEN
+        sync: false
+      - key: SHOP_STOREFRONT_DOMAIN
         sync: false
       - key: SHOPIFY_CUSTOMER_CLIENT_ID
         sync: false
