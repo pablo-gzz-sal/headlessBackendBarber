@@ -1,0 +1,87 @@
+previews:
+  generation: automatic
+
+services:
+  - type: web
+    name: barber-api
+    runtime: node
+    region: frankfurt
+    plan: free
+    branch: main
+
+    buildCommand: npm ci && npm run build
+    startCommand: node dist/main.js
+
+    envVars:
+      # ---- App ----
+      - key: NODE_ENV
+        value: production
+
+      - key: APP_URL
+        sync: false
+
+      # ---- Database (Render Postgres) ----
+      - key: DB_HOST
+        fromDatabase:
+          name: barber-db
+          property: host
+
+      - key: DB_PORT
+        fromDatabase:
+          name: barber-db
+          property: port
+
+      - key: DB_USERNAME
+        fromDatabase:
+          name: barber-db
+          property: user
+
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: barber-db
+          property: password
+
+      - key: DB_NAME
+        fromDatabase:
+          name: barber-db
+          property: database
+
+      # ---- Shopify Admin ----
+      - key: SHOPIFY_STORE_DOMAIN
+        sync: false
+
+      - key: SHOPIFY_ACCESS_TOKEN
+        sync: false
+
+      - key: SHOPIFY_API_KEY
+        sync: false
+
+      - key: SHOPIFY_API_SECRET_KEY
+        sync: false
+
+      # ---- Shopify Storefront ----
+      - key: SHOPIFY_STOREFRONT_TOKEN
+        sync: false
+
+      - key: SHOPIFY_STOREFRONT_ACCESS_TOKEN
+        sync: false
+
+      - key: SHOPIFY_CUSTOMER_CLIENT_ID
+        sync: false
+
+      - key: SHOPIFY_CUSTOMER_SHOP_ID
+        sync: false
+
+      # ---- MangoMint ----
+      - key: MANGOMINT_API_KEY
+        sync: false
+
+      - key: MANGOMINT_API_URL
+        value: https://api.mangomint.com/v1
+
+      - key: MANGOMINT_LOCATION_ID
+        sync: false
+
+databases:
+  - name: barber-db
+    plan: free
