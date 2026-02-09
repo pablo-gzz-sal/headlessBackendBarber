@@ -6,7 +6,7 @@ services:
     plan: free
     branch: main
 
-    buildCommand: npm ci && npm run build
+    buildCommand: yarn install --frozen-lockfile && yarn build
     startCommand: node dist/main.js
 
     envVars:
