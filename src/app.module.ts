@@ -10,16 +10,18 @@ import { CustomerAuthModule } from './modules/customer-auth/customer-auth.module
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ 
+    ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
     }),
 
     // Rate limiting
-    ThrottlerModule.forRoot([{
-      ttl: 60000, // 60 seconds
-      limit: 100, // 100 requests per TTL
-    }]),
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60000, // 60 seconds
+        limit: 100, // 100 requests per TTL
+      },
+    ]),
 
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -33,6 +35,10 @@ import { CustomerAuthModule } from './modules/customer-auth/customer-auth.module
         database: config.get('DB_NAME'),
         autoLoadEntities: true,
         synchronize: config.get('NODE_ENV') !== 'production',
+        ssl:
+          process.env.NODE_ENV === 'production'
+            ? { rejectUnauthorized: false }
+            : false,
         logging: config.get('NODE_ENV') === 'development',
       }),
     }),
