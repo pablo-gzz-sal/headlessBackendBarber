@@ -19,7 +19,7 @@ async function bootstrap() {
   
   // Enable CORS with specific options
   app.enableCors({
-    origin: ['http://localhost:4200', 'http://localhost:3000'], // Add your frontend URLs
+    origin: ['http://localhost:4200', 'http://localhost:3000', 'https://josephbattisti-q6dqe.ondigitalocean.app'], // Add your frontend URLs
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
     allowedHeaders: 'Content-Type, Accept, Authorization',
