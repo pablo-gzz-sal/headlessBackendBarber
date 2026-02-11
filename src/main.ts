@@ -19,7 +19,7 @@ async function bootstrap() {
   
   // Enable CORS with specific options
   app.enableCors({
-    origin: ['http://localhost:4200', 'http://localhost:3000', 'https://josephbattisti-q6dqe.ondigitalocean.app'], // Add your frontend URLs
+    origin: ['http://localhost:4200', 'http://localhost:3000', 'https://josephbattisti-q6dqe.ondigitalocean.app', 'http://127.0.0.1:4200/'], // Add your frontend URLs
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
     allowedHeaders: 'Content-Type, Accept, Authorization',
@@ -56,6 +56,7 @@ async function bootstrap() {
     .addTag('Gift Cards', 'Gift card operations')
     .addTag('MangoMint', 'Booking and appointment management')
     .addTag('Health', 'System health checks')
+    .addTag('Contact', 'Website contact form')
     .addBearerAuth()
     .addServer('http://localhost:3000', 'Local Development')
     .addServer('https://api.yourbarber.com', 'Production')

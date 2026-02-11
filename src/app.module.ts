@@ -7,6 +7,7 @@ import { ShopifyModule } from './integrations/shopify/shopify.module';
 import { MangomintModule } from './integrations/mangomint/mangomint.module';
 import { HealthModule } from './health/health.module';
 import { CustomerAuthModule } from './modules/customer-auth/customer-auth.module';
+import { ContactModule } from './modules/contact/contact.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { CustomerAuthModule } from './modules/customer-auth/customer-auth.module
     MangomintModule,
     HealthModule,
     CustomerAuthModule,
+    ContactModule
   ],
   providers: [
     {
