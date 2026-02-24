@@ -196,26 +196,73 @@ export class ShopifyService {
     }
   }
 
+  // async getCollectionProducts(collectionId: string, limit: number = 50) {
+  //   try {
+  //     const client = new this.shopify.clients.Rest({ session: this.session });
+
+  //     this.logger.log(`Fetching products for collection: ${collectionId}`);
+
+  //     const response = await client.get({
+  //       path: `collections/${collectionId}/products`,
+  //       query: { limit },
+  //     });
+      
+  //     this.logger.log(`MIAUUU`);
+
+
+  //     const products = (response.body['products'] || []).map((p: any) => ({
+  //       ...p,
+  //       price: p?.variants?.[0]?.price ?? null,
+  //     }));
+  //     this.logger.log(JSON.stringify(products[0], null, 2));
+  //     return { products, count: products.length };
+  //   } catch (error) {
+  //     this.logger.error('Failed to fetch collection products:', error.message);
+  //     throw new InternalServerErrorException(
+  //       'Failed to fetch collection products',
+  //     );
+  //   }
+  // }
+
   async getCollectionProducts(collectionId: string, limit: number = 50) {
-    try {
-      const client = new this.shopify.clients.Rest({ session: this.session });
+  try {
+    const client = new this.shopify.clients.Rest({ session: this.session });
 
-      this.logger.log(`Fetching products for collection: ${collectionId}`);
+    this.logger.log(`Fetching products for collection: ${collectionId}`);
 
-      const response = await client.get({
-        path: `collections/${collectionId}/products`,
-        query: { limit },
-      });
+    // ✅ Use products endpoint (returns full Product objects)
+    const response = await client.get({
+      path: `products`,
+      query: {
+        collection_id: collectionId,
+        limit,
+        fields: 'id,title,handle,vendor,product_type,tags,image,images,variants',
+      },
+    });
 
-      const products = response.body['products'] || [];
-      return { products, count: products.length };
-    } catch (error) {
-      this.logger.error('Failed to fetch collection products:', error.message);
-      throw new InternalServerErrorException(
-        'Failed to fetch collection products',
+    const products = response.body?.products ?? [];
+
+    this.logger.log(`Returned products: ${products.length}`);
+
+    const normalized = products.map((p: any) => ({
+      ...p,
+      // ✅ add top-level price for frontend convenience
+      price: p?.variants?.[0]?.price ?? null,
+    }));
+
+    if (normalized.length) {
+      const p0 = normalized[0];
+      this.logger.log(
+        `First product: ${p0.title} | variants=${p0?.variants?.length ?? 0} | price=${p0?.price ?? 'N/A'}`
       );
     }
+
+    return { products: normalized, count: normalized.length };
+  } catch (error: any) {
+    this.logger.error('Failed to fetch collection products:', error?.message ?? error);
+    throw new InternalServerErrorException('Failed to fetch collection products');
   }
+}
 
   // ==================== CUSTOMERS ====================
 
