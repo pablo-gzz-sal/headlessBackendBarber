@@ -17,6 +17,7 @@ import { CreateGiftCardDto } from './dto/gift-card.dto';
 import { RecommendationQueryDto } from './dto/recommendation-query.dto';
 import { CreateSmartCollectionDto } from './dto/smart-collection.dto';
 import { CreateMetafieldDto } from './dto/metafield.dto';
+import { brandKeyFromTitle } from '../../helpers/brandKey';
 
 @Injectable()
 export class ShopifyService {
@@ -150,26 +151,61 @@ export class ShopifyService {
     try {
       const client = new this.shopify.clients.Rest({ session: this.session });
 
-      const params: any = { limit: query.limit || 50 };
-      if (query.title) params.title = query.title;
+      const limit = query.limit || 200;
+      const params: any = { limit };
 
-      this.logger.log(
-        `Fetching collections with params: ${JSON.stringify(params)}`,
+      this.logger.log(`Fetching collections`);
+
+      const [customRes, smartRes] = await Promise.all([
+        client.get({ path: 'custom_collections', query: params }),
+        client.get({ path: 'smart_collections', query: params }),
+      ]);
+
+      const custom = customRes.body?.custom_collections ?? [];
+      const smart = smartRes.body?.smart_collections ?? [];
+
+      const allCollections = [...custom, ...smart].map((c: any) => ({
+        id: String(c.id),
+        title: c.title,
+        handle: c.handle,
+        image: c.image,
+        collection_type: c.rules ? 'smart' : 'custom',
+        brandKey: brandKeyFromTitle(c),
+      }));
+
+      // 🔥 GROUP BY brandKey
+      const grouped = allCollections.reduce((acc: any, c: any) => {
+        acc[c.brandKey] ??= {
+          brandKey: c.brandKey,
+          brandTitle: c.title.split(/[-|:–—]/)[0].trim(),
+          collections: [],
+        };
+        acc[c.brandKey].collections.push(c);
+        return acc;
+      }, {});
+
+      const brandGroups = Object.values(grouped).map((g: any) => ({
+        brandKey: g.brandKey,
+        brandTitle: g.brandTitle,
+        hero: g.collections.find((x: any) => x.image) ?? g.collections[0],
+        collectionIds: g.collections.map((x: any) => x.id),
+        collectionHandles: g.collections.map((x: any) => x.handle),
+        count: g.collections.length,
+      }));
+
+      return {
+        collections: allCollections, // raw list
+        brandGroups, // grouped list
+        count: allCollections.length,
+      };
+    } catch (error: any) {
+      this.logger.error(
+        'Failed to fetch collections:',
+        error?.message ?? error,
       );
-
-      const response = await client.get({
-        path: 'custom_collections',
-        query: params,
-      });
-
-      const collections = response.body['custom_collections'] || [];
-      return { collections, count: collections.length };
-    } catch (error) {
-      this.logger.error('Failed to fetch collections:', error.message);
       throw new InternalServerErrorException('Failed to fetch collections');
     }
   }
-
   async getCollectionById(collectionId: string) {
     try {
       const client = new this.shopify.clients.Rest({ session: this.session });
@@ -206,9 +242,8 @@ export class ShopifyService {
   //       path: `collections/${collectionId}/products`,
   //       query: { limit },
   //     });
-      
-  //     this.logger.log(`MIAUUU`);
 
+  //     this.logger.log(`MIAUUU`);
 
   //     const products = (response.body['products'] || []).map((p: any) => ({
   //       ...p,
@@ -225,44 +260,50 @@ export class ShopifyService {
   // }
 
   async getCollectionProducts(collectionId: string, limit: number = 50) {
-  try {
-    const client = new this.shopify.clients.Rest({ session: this.session });
+    try {
+      const client = new this.shopify.clients.Rest({ session: this.session });
 
-    this.logger.log(`Fetching products for collection: ${collectionId}`);
+      this.logger.log(`Fetching products for collection: ${collectionId}`);
 
-    // ✅ Use products endpoint (returns full Product objects)
-    const response = await client.get({
-      path: `products`,
-      query: {
-        collection_id: collectionId,
-        limit,
-        fields: 'id,title,handle,vendor,product_type,tags,image,images,variants',
-      },
-    });
+      // ✅ Use products endpoint (returns full Product objects)
+      const response = await client.get({
+        path: `products`,
+        query: {
+          collection_id: collectionId,
+          limit,
+          fields:
+            'id,title,handle,vendor,product_type,tags,image,images,variants',
+        },
+      });
 
-    const products = response.body?.products ?? [];
+      const products = response.body?.products ?? [];
 
-    this.logger.log(`Returned products: ${products.length}`);
+      this.logger.log(`Returned products: ${products.length}`);
 
-    const normalized = products.map((p: any) => ({
-      ...p,
-      // ✅ add top-level price for frontend convenience
-      price: p?.variants?.[0]?.price ?? null,
-    }));
+      const normalized = products.map((p: any) => ({
+        ...p,
+        // ✅ add top-level price for frontend convenience
+        price: p?.variants?.[0]?.price ?? null,
+      }));
 
-    if (normalized.length) {
-      const p0 = normalized[0];
-      this.logger.log(
-        `First product: ${p0.title} | variants=${p0?.variants?.length ?? 0} | price=${p0?.price ?? 'N/A'}`
+      if (normalized.length) {
+        const p0 = normalized[0];
+        this.logger.log(
+          `First product: ${p0.title} | variants=${p0?.variants?.length ?? 0} | price=${p0?.price ?? 'N/A'}`,
+        );
+      }
+
+      return { products: normalized, count: normalized.length };
+    } catch (error: any) {
+      this.logger.error(
+        'Failed to fetch collection products:',
+        error?.message ?? error,
+      );
+      throw new InternalServerErrorException(
+        'Failed to fetch collection products',
       );
     }
-
-    return { products: normalized, count: normalized.length };
-  } catch (error: any) {
-    this.logger.error('Failed to fetch collection products:', error?.message ?? error);
-    throw new InternalServerErrorException('Failed to fetch collection products');
   }
-}
 
   // ==================== CUSTOMERS ====================
 
