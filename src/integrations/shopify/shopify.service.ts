@@ -932,40 +932,110 @@ export class ShopifyService {
   }
 
   // ==================== PRODUCT TAGS ====================
+  async getProductsByTag(tag: string, limit: number = 50) {
+  try {
+    const client = new this.shopify.clients.Graphql({ session: this.session });
 
+    const normalizedTag = (tag ?? '').trim();
+    if (!normalizedTag) throw new BadRequestException('Tag is required');
+
+    const target = Math.max(1, Number(limit) || 50);
+    const pageSize = Math.min(250, target);
+
+    const gql = `
+      query ProductsByTag($first: Int!, $after: String, $query: String!) {
+        products(first: $first, after: $after, query: $query) {
+          pageInfo { hasNextPage endCursor }
+          edges {
+            node {
+              id
+              title
+              handle
+              tags
+              vendor
+              status
+              featuredImage { url altText }
+              variants(first: 1) {
+                edges { node { id price } }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    // Shopify product search syntax
+    const query = `tag:${normalizedTag}`;
+
+    const products: any[] = [];
+    let after: string | null = null;
+
+    this.logger.log(`GraphQL: fetching products with ${query} (target=${target})`);
+
+    while (products.length < target) {
+      const variables = {
+        first: Math.min(pageSize, target - products.length),
+        after,
+        query,
+      };
+
+      // ✅ v12+ uses request(), NOT query()
+      const resp: any = await client.request(gql, { variables });
+
+      const data = resp?.data ?? resp?.body?.data; // be tolerant across setups
+      const edges = data?.products?.edges ?? [];
+
+      for (const e of edges) products.push(e.node);
+
+      const pageInfo = data?.products?.pageInfo;
+      if (!pageInfo?.hasNextPage) break;
+
+      after = pageInfo.endCursor;
+      if (!after) break;
+    }
+
+    return { products, count: products.length };
+  } catch (error: any) {
+    this.logger.error(
+      `Failed to fetch products by tag "${tag}": ${error?.message}`,
+      error?.stack,
+    );
+    throw new InternalServerErrorException('Failed to fetch products by tag');
+  }
+}
   /**
    * Get products by tag (useful for filtering)
    */
-  async getProductsByTag(tag: string, limit: number = 50) {
-    try {
-      const client = new this.shopify.clients.Rest({ session: this.session });
+  // async getProductsByTag(tag: string, limit: number = 50) {
+  //   try {
+  //     const client = new this.shopify.clients.Rest({ session: this.session });
 
-      this.logger.log(`Fetching products with tag: ${tag}`);
+  //     this.logger.log(`Fetching products with tag: ${tag}`);
 
-      const response = await client.get({
-        path: 'products',
-        query: {
-          limit,
-          // Shopify doesn't directly support tag filtering in REST API
-          // We'll fetch and filter
-        },
-      });
+  //     const response = await client.get({
+  //       path: 'products',
+  //       query: {
+  //         limit,
+  //         // Shopify doesn't directly support tag filtering in REST API
+  //         // We'll fetch and filter
+  //       },
+  //     });
 
-      let products = response.body['products'] || [];
+  //     let products = response.body['products'] || [];
 
-      // Filter by tag
-      products = products.filter(
-        (product) =>
-          product.tags &&
-          product.tags.toLowerCase().includes(tag.toLowerCase()),
-      );
+  //     // Filter by tag
+  //     products = products.filter(
+  //       (product) =>
+  //         product.tags &&
+  //         product.tags.toLowerCase().includes(tag.toLowerCase()),
+  //     );
 
-      return { products, count: products.length };
-    } catch (error) {
-      this.logger.error('Failed to fetch products by tag:', error.message);
-      throw new InternalServerErrorException('Failed to fetch products by tag');
-    }
-  }
+  //     return { products, count: products.length };
+  //   } catch (error) {
+  //     this.logger.error('Failed to fetch products by tag:', error.message);
+  //     throw new InternalServerErrorException('Failed to fetch products by tag');
+  //   }
+  // }
 
   // ==================== METAFIELDS (For Custom Data) ====================
 
