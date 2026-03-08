@@ -123,27 +123,149 @@ export class ShopifyService {
     }
   }
 
-  async searchProducts(query: string, limit: number = 20) {
-    try {
-      const client = new this.shopify.clients.Rest({ session: this.session });
+async searchProducts(query: string, limit: number = 20) {
+  try {
+    const term = (query || '').trim();
 
-      this.logger.log(`Searching products with query: ${query}`);
-
-      const response = await client.get({
-        path: 'products',
-        query: {
-          limit,
-          title: query,
-        },
-      });
-
-      const products = response.body['products'] || [];
-      return { products, count: products.length };
-    } catch (error) {
-      this.logger.error('Failed to search products:', error.message);
-      throw new InternalServerErrorException('Failed to search products');
+    if (!term) {
+      return { products: [], count: 0 };
     }
+
+    this.logger.log(`Searching products with query: ${term}`);
+
+    const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+    const accessToken = this.configService.get<string>('SHOPIFY_ACCESS_TOKEN');
+
+    if (!shopDomain || !accessToken) {
+      throw new Error('Missing Shopify configuration');
+    }
+
+    const normalizedDomain = shopDomain
+      .replace(/^https?:\/\//, '')
+      .replace(/\/$/, '');
+
+    const endpoint = `https://${normalizedDomain}/admin/api/2026-01/graphql.json`;
+
+    const safeTerm = term.replace(/["\\]/g, ' ').trim();
+
+    const graphqlQuery = `
+      query SearchProducts($first: Int!, $query: String!) {
+        products(first: $first, query: $query, sortKey: RELEVANCE) {
+          edges {
+            node {
+              id
+              legacyResourceId
+              title
+              handle
+              vendor
+              tags
+              productType
+              featuredImage {
+                url
+                altText
+              }
+              images(first: 1) {
+                edges {
+                  node {
+                    url
+                    altText
+                  }
+                }
+              }
+              variants(first: 1) {
+                edges {
+                  node {
+                    id
+                    price
+                    compareAtPrice
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const searchQuery = [
+      `status:active`,
+      `(title:*${safeTerm}* OR vendor:*${safeTerm}* OR tag:*${safeTerm}* OR product_type:*${safeTerm}*)`,
+    ].join(' AND ');
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': accessToken,
+      },
+      body: JSON.stringify({
+        query: graphqlQuery,
+        variables: {
+          first: limit,
+          query: searchQuery,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      this.logger.error(`Shopify search failed: ${response.status} ${text}`);
+      throw new Error(`Shopify GraphQL error: ${response.status}`);
+    }
+
+    const json = await response.json();
+
+    if (json.errors?.length) {
+      this.logger.error(
+        `Shopify GraphQL errors: ${JSON.stringify(json.errors)}`,
+      );
+      throw new Error('Shopify GraphQL returned errors');
+    }
+
+    const edges = json?.data?.products?.edges ?? [];
+
+    const products = edges.map((edge: any) => {
+      const node = edge.node;
+      const firstImage = node?.images?.edges?.[0]?.node;
+      const firstVariant = node?.variants?.edges?.[0]?.node;
+
+      return {
+        id: String(node?.legacyResourceId ?? node?.id),
+        title: node?.title ?? '',
+        handle: node?.handle ?? '',
+        vendor: node?.vendor ?? '',
+        tags: node?.tags ?? [],
+        product_type: node?.productType ?? '',
+        image: {
+          src: node?.featuredImage?.url ?? firstImage?.url ?? '',
+          alt:
+            node?.featuredImage?.altText ??
+            firstImage?.altText ??
+            node?.title ??
+            '',
+        },
+        variants: firstVariant
+          ? [
+              {
+                id: firstVariant.id,
+                price: firstVariant.price,
+                compare_at_price: firstVariant.compareAtPrice,
+              },
+            ]
+          : [],
+        price: firstVariant?.price ?? null,
+      };
+    });
+
+    return {
+      products,
+      count: products.length,
+    };
+  } catch (error: any) {
+    this.logger.error('Failed to search products:', error?.message || error);
+    throw new InternalServerErrorException('Failed to search products');
   }
+}
 
   // ==================== COLLECTIONS ====================
 
