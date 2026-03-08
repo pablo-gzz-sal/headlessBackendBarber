@@ -123,32 +123,34 @@ export class ShopifyService {
     }
   }
 
-async searchProducts(query: string, limit: number = 20) {
-  try {
-    const term = (query || '').trim();
+  async searchProducts(query: string, limit: number = 20) {
+    try {
+      const term = (query || '').trim();
 
-    if (!term) {
-      return { products: [], count: 0 };
-    }
+      if (!term) {
+        return { products: [], count: 0 };
+      }
 
-    this.logger.log(`Searching products with query: ${term}`);
+      this.logger.log(`Searching products with query: ${term}`);
 
-    const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
-    const accessToken = this.configService.get<string>('SHOPIFY_ACCESS_TOKEN');
+      const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+      const accessToken = this.configService.get<string>(
+        'SHOPIFY_ACCESS_TOKEN',
+      );
 
-    if (!shopDomain || !accessToken) {
-      throw new Error('Missing Shopify configuration');
-    }
+      if (!shopDomain || !accessToken) {
+        throw new Error('Missing Shopify configuration');
+      }
 
-    const normalizedDomain = shopDomain
-      .replace(/^https?:\/\//, '')
-      .replace(/\/$/, '');
+      const normalizedDomain = shopDomain
+        .replace(/^https?:\/\//, '')
+        .replace(/\/$/, '');
 
-    const endpoint = `https://${normalizedDomain}/admin/api/2026-01/graphql.json`;
+      const endpoint = `https://${normalizedDomain}/admin/api/2026-01/graphql.json`;
 
-    const safeTerm = term.replace(/["\\]/g, ' ').trim();
+      const safeTerm = term.replace(/["\\]/g, ' ').trim();
 
-    const graphqlQuery = `
+      const graphqlQuery = `
       query SearchProducts($first: Int!, $query: String!) {
         products(first: $first, query: $query, sortKey: RELEVANCE) {
           edges {
@@ -187,85 +189,85 @@ async searchProducts(query: string, limit: number = 20) {
       }
     `;
 
-    const searchQuery = [
-      `status:active`,
-      `(title:*${safeTerm}* OR vendor:*${safeTerm}* OR tag:*${safeTerm}* OR product_type:*${safeTerm}*)`,
-    ].join(' AND ');
+      const searchQuery = [
+        `status:active`,
+        `(title:*${safeTerm}* OR vendor:*${safeTerm}* OR tag:*${safeTerm}* OR product_type:*${safeTerm}*)`,
+      ].join(' AND ');
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Shopify-Access-Token': accessToken,
-      },
-      body: JSON.stringify({
-        query: graphqlQuery,
-        variables: {
-          first: limit,
-          query: searchQuery,
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': accessToken,
         },
-      }),
-    });
+        body: JSON.stringify({
+          query: graphqlQuery,
+          variables: {
+            first: limit,
+            query: searchQuery,
+          },
+        }),
+      });
 
-    if (!response.ok) {
-      const text = await response.text();
-      this.logger.error(`Shopify search failed: ${response.status} ${text}`);
-      throw new Error(`Shopify GraphQL error: ${response.status}`);
-    }
+      if (!response.ok) {
+        const text = await response.text();
+        this.logger.error(`Shopify search failed: ${response.status} ${text}`);
+        throw new Error(`Shopify GraphQL error: ${response.status}`);
+      }
 
-    const json = await response.json();
+      const json = await response.json();
 
-    if (json.errors?.length) {
-      this.logger.error(
-        `Shopify GraphQL errors: ${JSON.stringify(json.errors)}`,
-      );
-      throw new Error('Shopify GraphQL returned errors');
-    }
+      if (json.errors?.length) {
+        this.logger.error(
+          `Shopify GraphQL errors: ${JSON.stringify(json.errors)}`,
+        );
+        throw new Error('Shopify GraphQL returned errors');
+      }
 
-    const edges = json?.data?.products?.edges ?? [];
+      const edges = json?.data?.products?.edges ?? [];
 
-    const products = edges.map((edge: any) => {
-      const node = edge.node;
-      const firstImage = node?.images?.edges?.[0]?.node;
-      const firstVariant = node?.variants?.edges?.[0]?.node;
+      const products = edges.map((edge: any) => {
+        const node = edge.node;
+        const firstImage = node?.images?.edges?.[0]?.node;
+        const firstVariant = node?.variants?.edges?.[0]?.node;
+
+        return {
+          id: String(node?.legacyResourceId ?? node?.id),
+          title: node?.title ?? '',
+          handle: node?.handle ?? '',
+          vendor: node?.vendor ?? '',
+          tags: node?.tags ?? [],
+          product_type: node?.productType ?? '',
+          image: {
+            src: node?.featuredImage?.url ?? firstImage?.url ?? '',
+            alt:
+              node?.featuredImage?.altText ??
+              firstImage?.altText ??
+              node?.title ??
+              '',
+          },
+          variants: firstVariant
+            ? [
+                {
+                  id: firstVariant.id,
+                  price: firstVariant.price,
+                  compare_at_price: firstVariant.compareAtPrice,
+                },
+              ]
+            : [],
+          price: firstVariant?.price ?? null,
+        };
+      });
 
       return {
-        id: String(node?.legacyResourceId ?? node?.id),
-        title: node?.title ?? '',
-        handle: node?.handle ?? '',
-        vendor: node?.vendor ?? '',
-        tags: node?.tags ?? [],
-        product_type: node?.productType ?? '',
-        image: {
-          src: node?.featuredImage?.url ?? firstImage?.url ?? '',
-          alt:
-            node?.featuredImage?.altText ??
-            firstImage?.altText ??
-            node?.title ??
-            '',
-        },
-        variants: firstVariant
-          ? [
-              {
-                id: firstVariant.id,
-                price: firstVariant.price,
-                compare_at_price: firstVariant.compareAtPrice,
-              },
-            ]
-          : [],
-        price: firstVariant?.price ?? null,
+        products,
+        count: products.length,
       };
-    });
-
-    return {
-      products,
-      count: products.length,
-    };
-  } catch (error: any) {
-    this.logger.error('Failed to search products:', error?.message || error);
-    throw new InternalServerErrorException('Failed to search products');
+    } catch (error: any) {
+      this.logger.error('Failed to search products:', error?.message || error);
+      throw new InternalServerErrorException('Failed to search products');
+    }
   }
-}
 
   // ==================== COLLECTIONS ====================
 
@@ -1055,16 +1057,18 @@ async searchProducts(query: string, limit: number = 20) {
 
   // ==================== PRODUCT TAGS ====================
   async getProductsByTag(tag: string, limit: number = 50) {
-  try {
-    const client = new this.shopify.clients.Graphql({ session: this.session });
+    try {
+      const client = new this.shopify.clients.Graphql({
+        session: this.session,
+      });
 
-    const normalizedTag = (tag ?? '').trim();
-    if (!normalizedTag) throw new BadRequestException('Tag is required');
+      const normalizedTag = (tag ?? '').trim();
+      if (!normalizedTag) throw new BadRequestException('Tag is required');
 
-    const target = Math.max(1, Number(limit) || 50);
-    const pageSize = Math.min(250, target);
+      const target = Math.max(1, Number(limit) || 50);
+      const pageSize = Math.min(250, target);
 
-    const gql = `
+      const gql = `
       query ProductsByTag($first: Int!, $after: String, $query: String!) {
         products(first: $first, after: $after, query: $query) {
           pageInfo { hasNextPage endCursor }
@@ -1086,45 +1090,47 @@ async searchProducts(query: string, limit: number = 20) {
       }
     `;
 
-    // Shopify product search syntax
-    const query = `tag:${normalizedTag}`;
+      // Shopify product search syntax
+      const query = `tag:${normalizedTag}`;
 
-    const products: any[] = [];
-    let after: string | null = null;
+      const products: any[] = [];
+      let after: string | null = null;
 
-    this.logger.log(`GraphQL: fetching products with ${query} (target=${target})`);
+      this.logger.log(
+        `GraphQL: fetching products with ${query} (target=${target})`,
+      );
 
-    while (products.length < target) {
-      const variables = {
-        first: Math.min(pageSize, target - products.length),
-        after,
-        query,
-      };
+      while (products.length < target) {
+        const variables = {
+          first: Math.min(pageSize, target - products.length),
+          after,
+          query,
+        };
 
-      // ✅ v12+ uses request(), NOT query()
-      const resp: any = await client.request(gql, { variables });
+        // ✅ v12+ uses request(), NOT query()
+        const resp: any = await client.request(gql, { variables });
 
-      const data = resp?.data ?? resp?.body?.data; // be tolerant across setups
-      const edges = data?.products?.edges ?? [];
+        const data = resp?.data ?? resp?.body?.data; // be tolerant across setups
+        const edges = data?.products?.edges ?? [];
 
-      for (const e of edges) products.push(e.node);
+        for (const e of edges) products.push(e.node);
 
-      const pageInfo = data?.products?.pageInfo;
-      if (!pageInfo?.hasNextPage) break;
+        const pageInfo = data?.products?.pageInfo;
+        if (!pageInfo?.hasNextPage) break;
 
-      after = pageInfo.endCursor;
-      if (!after) break;
+        after = pageInfo.endCursor;
+        if (!after) break;
+      }
+
+      return { products, count: products.length };
+    } catch (error: any) {
+      this.logger.error(
+        `Failed to fetch products by tag "${tag}": ${error?.message}`,
+        error?.stack,
+      );
+      throw new InternalServerErrorException('Failed to fetch products by tag');
     }
-
-    return { products, count: products.length };
-  } catch (error: any) {
-    this.logger.error(
-      `Failed to fetch products by tag "${tag}": ${error?.message}`,
-      error?.stack,
-    );
-    throw new InternalServerErrorException('Failed to fetch products by tag');
   }
-}
   /**
    * Get products by tag (useful for filtering)
    */
@@ -1303,85 +1309,87 @@ async searchProducts(query: string, limit: number = 20) {
   /**
    * Get sale products (variant.compare_at_price > variant.price)
    */
-  async getSaleProducts(limit = 20, minDiscount = 0) {
-    const client = new this.shopify.clients.Rest({ session: this.session });
+  async getSaleProducts(limit = 20, minDiscount = 0, brand?: string) {
+    try {
+      const client = new this.shopify.clients.Rest({ session: this.session });
 
-    // 1) Try compare_at_price logic
-    const res = await client.get({
-      path: 'products',
-      query: { limit: 250, status: 'active' },
-    });
+      const normalizedBrand = String(brand ?? '')
+        .trim()
+        .toLowerCase();
 
-    const products = res.body['products'] ?? [];
+      const res = await client.get({
+        path: 'products',
+        query: { limit: 250, status: 'active' },
+      });
 
-    const sale = products
-      .map((p) => {
-        const variants = Array.isArray(p?.variants) ? p.variants : [];
+      const products = res.body['products'] ?? [];
 
-        let bestDiscountPct = -1;
-        let bestPrice: number | null = null;
-        let bestCompareAt: number | null = null;
+      const sale = products
+        .filter((p: any) => {
+          if (!normalizedBrand) return true;
 
-        for (const v of variants) {
-          const price = Number(v?.price);
-          const compareAt = Number(v?.compare_at_price);
+          const handle = String(p?.handle ?? '')
+            .trim()
+            .toLowerCase();
 
-          if (!Number.isFinite(price) || !Number.isFinite(compareAt)) continue;
-          if (compareAt <= price) continue;
+          const firstPart = handle.split('-')[0];
+          return firstPart === normalizedBrand;
+        })
+        .map((p: any) => {
+          const variants = Array.isArray(p?.variants) ? p.variants : [];
 
-          const pct = ((compareAt - price) / compareAt) * 100;
+          let bestDiscountPct = -1;
+          let bestPrice: number | null = null;
+          let bestCompareAt: number | null = null;
 
-          if (pct > bestDiscountPct) {
-            bestDiscountPct = pct;
-            bestPrice = price;
-            bestCompareAt = compareAt;
+          for (const v of variants) {
+            const price = Number(v?.price);
+            const compareAt = Number(v?.compare_at_price);
+
+            if (!Number.isFinite(price) || !Number.isFinite(compareAt))
+              continue;
+            if (compareAt <= price) continue;
+
+            const pct = ((compareAt - price) / compareAt) * 100;
+
+            if (pct > bestDiscountPct) {
+              bestDiscountPct = pct;
+              bestPrice = price;
+              bestCompareAt = compareAt;
+            }
           }
-        }
 
-        if (bestDiscountPct < 0) return null;
-        if (bestDiscountPct < minDiscount) return null;
+          if (bestDiscountPct < 0) return null;
+          if (bestDiscountPct < minDiscount) return null;
 
-        return {
-          ...p,
-          sale_data: {
-            best_price: bestPrice,
-            best_compare_at_price: bestCompareAt,
-            discount_percent: Number(bestDiscountPct.toFixed(2)),
-          },
-        };
-      })
-      .filter(Boolean)
-      .sort(
-        (a: any, b: any) =>
-          (b.sale_data?.discount_percent ?? 0) -
-          (a.sale_data?.discount_percent ?? 0),
-      )
-      .slice(0, limit);
+          return {
+            ...p,
+            sale_data: {
+              best_price: bestPrice,
+              best_compare_at_price: bestCompareAt,
+              discount_percent: Number(bestDiscountPct.toFixed(2)),
+            },
+          };
+        })
+        .filter(Boolean)
+        .sort(
+          (a: any, b: any) =>
+            (b.sale_data?.discount_percent ?? 0) -
+            (a.sale_data?.discount_percent ?? 0),
+        )
+        .slice(0, limit);
 
-    // 2) Fallback to a Sale collection if no compare-at sales exist
-    if (sale.length === 0) {
-      // change handle if your collection uses a different handle
-      const handle = 'sale';
-
-      try {
-        const fromCollection = await this.getCollectionByHandle(handle);
-        return {
-          sale: fromCollection,
-          count: fromCollection.length,
-          minDiscount,
-          source: `collection:${handle}`,
-        };
-      } catch {
-        // ignore fallback errors and return empty
-      }
+      return {
+        sale,
+        count: sale.length,
+        minDiscount,
+        brand: normalizedBrand || null,
+        source: 'compare_at_price',
+      };
+    } catch (error) {
+      this.logger.error('Failed to fetch sale products:', error.message);
+      throw new InternalServerErrorException('Failed to fetch sale products');
     }
-
-    return {
-      sale,
-      count: sale.length,
-      minDiscount,
-      source: 'compare_at_price',
-    };
   }
 
   // ==================== VARIANTS ====================

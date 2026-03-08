@@ -578,8 +578,9 @@ export class ShopifyController {
     @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
     @Query('minDiscount', new DefaultValuePipe(0), ParseIntPipe)
     minDiscount: number,
+    @Query('brand') brand?: string,
   ) {
-    return this.shopifyService.getSaleProducts(limit, minDiscount);
+    return this.shopifyService.getSaleProducts(limit, minDiscount, brand);
   }
 
   // ==================== VARIANTS ====================
