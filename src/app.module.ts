@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { ShopifyModule } from './integrations/shopify/shopify.module';
@@ -19,30 +18,11 @@ import { ContactModule } from './modules/contact/contact.module';
     // Rate limiting
     ThrottlerModule.forRoot([
       {
-        ttl: 60000, // 60 seconds
-        limit: 100, // 100 requests per TTL
+        ttl: 60000,
+        limit: 100, 
       },
     ]),
 
-    TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
-        host: config.get('DB_HOST'),
-        port: +config.get<number>('DB_PORT', 5432),
-        username: config.get('DB_USERNAME'),
-        password: config.get('DB_PASSWORD'),
-        database: config.get('DB_NAME'),
-        autoLoadEntities: true,
-        synchronize: config.get('NODE_ENV') !== 'production',
-        ssl:
-          process.env.NODE_ENV === 'production'
-            ? { rejectUnauthorized: false }
-            : false,
-        logging: config.get('NODE_ENV') === 'development',
-      }),
-    }),
 
     ShopifyModule,
     MangomintModule,
