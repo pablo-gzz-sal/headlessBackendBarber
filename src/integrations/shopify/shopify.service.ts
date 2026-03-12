@@ -288,38 +288,78 @@ export class ShopifyService {
       const custom = customRes.body?.custom_collections ?? [];
       const smart = smartRes.body?.smart_collections ?? [];
 
-      const allCollections = [...custom, ...smart].map((c: any) => ({
-        id: String(c.id),
-        title: c.title,
-        handle: c.handle,
-        image: c.image,
-        collection_type: c.rules ? 'smart' : 'custom',
-        brandKey: brandKeyFromTitle(c),
-      }));
+      const rawCollections = [
+        ...custom.map((c: any) => ({ ...c, collection_type: 'custom' })),
+        ...smart.map((c: any) => ({ ...c, collection_type: 'smart' })),
+      ];
 
-      // 🔥 GROUP BY brandKey
+      const allCollections = await Promise.all(
+        rawCollections.map(async (c: any) => {
+          const metafields = await this.getCollectionImageMetafields(
+            String(c.id),
+            c.collection_type,
+          );
+
+          return {
+            id: String(c.id),
+            title: c.title,
+            handle: c.handle,
+            image: c.image,
+            collection_type: c.collection_type,
+            brandKey: brandKeyFromTitle(c),
+
+            // expose all metafields too in case frontend wants the raw array
+            metafields,
+
+            // flattened fields for easier frontend usage
+            brandImage: this.getMetafieldValue(metafields, 'brandImage'),
+            footerBrand: this.getMetafieldValue(metafields, 'footerBrand'),
+            overviewCollection: this.getMetafieldValue(
+              metafields,
+              'overviewCollection',
+            ),
+          };
+        }),
+      );
+
       const grouped = allCollections.reduce((acc: any, c: any) => {
         acc[c.brandKey] ??= {
           brandKey: c.brandKey,
           brandTitle: c.title.split(/[-|:–—]/)[0].trim(),
           collections: [],
         };
+
         acc[c.brandKey].collections.push(c);
         return acc;
       }, {});
 
-      const brandGroups = Object.values(grouped).map((g: any) => ({
-        brandKey: g.brandKey,
-        brandTitle: g.brandTitle,
-        hero: g.collections.find((x: any) => x.image) ?? g.collections[0],
-        collectionIds: g.collections.map((x: any) => x.id),
-        collectionHandles: g.collections.map((x: any) => x.handle),
-        count: g.collections.length,
-      }));
+      const brandGroups = Object.values(grouped).map((g: any) => {
+        const heroCollection =
+          g.collections.find((x: any) => x.brandImage) ??
+          g.collections.find((x: any) => x.footerBrand) ??
+          g.collections.find((x: any) => x.image) ??
+          g.collections[0];
+
+        return {
+          brandKey: g.brandKey,
+          brandTitle: g.brandTitle,
+          hero: heroCollection,
+          collectionIds: g.collections.map((x: any) => x.id),
+          collectionHandles: g.collections.map((x: any) => x.handle),
+          collectionTitles: g.collections.map((x: any) => x.title),
+
+          // useful for grouped brand pages
+          collectionImages: g.collections.map(
+            (x: any) => x.overviewCollection || x.image?.src || '',
+          ),
+
+          count: g.collections.length,
+        };
+      });
 
       return {
-        collections: allCollections, // raw list
-        brandGroups, // grouped list
+        collections: allCollections,
+        brandGroups,
         count: allCollections.length,
       };
     } catch (error: any) {
@@ -329,6 +369,42 @@ export class ShopifyService {
       );
       throw new InternalServerErrorException('Failed to fetch collections');
     }
+  }
+
+  private async getCollectionImageMetafields(
+    collectionId: string,
+    collectionType: 'custom' | 'smart',
+  ) {
+    try {
+      const client = new this.shopify.clients.Rest({ session: this.session });
+
+      const resource =
+        collectionType === 'smart' ? 'smart_collection' : 'custom_collection';
+
+      const res = await client.get({
+        path: 'metafields',
+        query: {
+          owner_id: collectionId,
+          owner_resource: resource,
+        },
+      });
+
+      const metafields = res.body?.metafields ?? [];
+
+      return metafields.filter((m: any) =>
+        ['brandImage', 'footerBrand', 'overviewCollection'].includes(m.key),
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to fetch metafields for collection ${collectionId}: ${error?.message ?? error}`,
+      );
+      return [];
+    }
+  }
+
+  private getMetafieldValue(metafields: any[], key: string): string {
+    const found = metafields.find((m: any) => m?.key === key);
+    return found?.value ?? '';
   }
   async getCollectionById(collectionId: string) {
     try {
