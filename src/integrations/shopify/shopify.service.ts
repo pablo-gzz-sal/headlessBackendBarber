@@ -25,6 +25,10 @@ export class ShopifyService {
   private session;
   private readonly logger = new Logger(ShopifyService.name);
 
+  private requestQueue: Promise<any> = Promise.resolve();
+  private lastRequestAt = 0;
+  private readonly minRequestGapMs = 600;
+
   constructor(private configService: ConfigService) {
     const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
     const accessToken = this.configService.get<string>('SHOPIFY_ACCESS_TOKEN');
@@ -459,51 +463,26 @@ export class ShopifyService {
   //   }
   // }
 
-  async getCollectionProducts(collectionId: string, limit: number = 50) {
-    try {
-      const client = new this.shopify.clients.Rest({ session: this.session });
+async getCollectionProducts(collectionId: string, limit: number = 50) {
+  try {
+    const client = new this.shopify.clients.Rest({ session: this.session });
 
-      this.logger.log(`Fetching products for collection: ${collectionId}`);
+    this.logger.log(`Fetching products for collection: ${collectionId}`);
 
-      // ✅ Use products endpoint (returns full Product objects)
-      const response = await client.get({
-        path: `products`,
-        query: {
-          collection_id: collectionId,
-          limit,
-          fields:
-            'id,title,handle,vendor,product_type,tags,image,images,variants',
-        },
-      });
+    const response = await this.enqueueShopifyRequest(() =>
+      client.get({
+        path: `collections/${collectionId}/products`,
+        query: { limit },
+      }),
+    );
 
-      const products = response.body?.products ?? [];
-
-      this.logger.log(`Returned products: ${products.length}`);
-
-      const normalized = products.map((p: any) => ({
-        ...p,
-        // ✅ add top-level price for frontend convenience
-        price: p?.variants?.[0]?.price ?? null,
-      }));
-
-      if (normalized.length) {
-        const p0 = normalized[0];
-        this.logger.log(
-          `First product: ${p0.title} | variants=${p0?.variants?.length ?? 0} | price=${p0?.price ?? 'N/A'}`,
-        );
-      }
-
-      return { products: normalized, count: normalized.length };
-    } catch (error: any) {
-      this.logger.error(
-        'Failed to fetch collection products:',
-        error?.message ?? error,
-      );
-      throw new InternalServerErrorException(
-        'Failed to fetch collection products',
-      );
-    }
+    const products = (response as any).body['products'] || [];
+    return { products, count: products.length };
+  } catch (error) {
+    this.logger.error('Failed to fetch collection products:', error.message);
+    throw new InternalServerErrorException('Failed to fetch collection products');
   }
+}
 
   // ==================== CUSTOMERS ====================
 
@@ -1041,42 +1020,43 @@ export class ShopifyService {
   /**
    * Get collection by handle (user-friendly URL)
    */
-  async getCollectionByHandle(handle: string) {
-    try {
-      const client = new this.shopify.clients.Rest({ session: this.session });
+async getCollectionByHandle(handle: string) {
+try {
+  const client = new this.shopify.clients.Rest({ session: this.session });
 
-      this.logger.log(`Fetching collection with handle: ${handle}`);
+  this.logger.log(`Fetching collection with handle: ${handle}`);
 
-      // First try custom collections
-      let response = await client.get({
-        path: 'custom_collections',
-        query: { handle },
-      });
+  let response = await this.enqueueShopifyRequest(() =>
+    client.get({
+      path: 'custom_collections',
+      query: { handle },
+    }),
+  );
 
-      let collections = response.body['custom_collections'] || [];
+  let collections = (response as any).body['custom_collections'] || [];
 
-      // If not found, try smart collections
-      if (collections.length === 0) {
-        response = await client.get({
+    if (collections.length === 0) {
+      response = await this.enqueueShopifyRequest(() =>
+        client.get({
           path: 'smart_collections',
           query: { handle },
-        });
-        collections = response.body['smart_collections'] || [];
-      }
+        }),
+      );
 
-      if (collections.length === 0) {
-        throw new NotFoundException(
-          `Collection with handle '${handle}' not found`,
-        );
-      }
-
-      return collections[0];
-    } catch (error) {
-      if (error instanceof NotFoundException) throw error;
-      this.logger.error('Failed to fetch collection by handle:', error.message);
-      throw new InternalServerErrorException('Failed to fetch collection');
+      collections = (response as any).body['smart_collections'] || [];
     }
+
+    if (collections.length === 0) {
+      throw new NotFoundException(`Collection with handle '${handle}' not found`);
+    }
+
+    return collections[0];
+  } catch (error) {
+    if (error instanceof NotFoundException) throw error;
+    this.logger.error('Failed to fetch collection by handle:', error.message);
+    throw new InternalServerErrorException('Failed to fetch collection');
   }
+}
 
   /**
    * Get products from multiple collections (for homepage sections)
@@ -1566,5 +1546,63 @@ export class ShopifyService {
       title: found.title,
       price: found.price,
     };
+  }
+
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private isThrottleError(error: any): boolean {
+    const message = String(error?.message ?? '').toLowerCase();
+    const status =
+      error?.response?.status ?? error?.statusCode ?? error?.status;
+
+    return (
+      status === 429 ||
+      message.includes('throttl') ||
+      message.includes('exceeded 2 calls per second')
+    );
+  }
+
+  private async enqueueShopifyRequest<T>(
+    fn: () => Promise<T>,
+    attempt = 1,
+  ): Promise<T> {
+    const run = async () => {
+      const now = Date.now();
+      const waitMs = Math.max(
+        0,
+        this.minRequestGapMs - (now - this.lastRequestAt),
+      );
+
+      if (waitMs > 0) {
+        await this.sleep(waitMs);
+      }
+
+      this.lastRequestAt = Date.now();
+
+      try {
+        return await fn();
+      } catch (error) {
+        if (this.isThrottleError(error) && attempt <= 4) {
+          const backoff = 800 * attempt;
+          this.logger.warn(
+            `Shopify throttled request. Retrying in ${backoff}ms (attempt ${attempt})`,
+          );
+          await this.sleep(backoff);
+          return this.enqueueShopifyRequest(fn, attempt + 1);
+        }
+
+        throw error;
+      }
+    };
+
+    const next = this.requestQueue.then(run, run);
+    this.requestQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    return next;
   }
 }
