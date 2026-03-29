@@ -19,6 +19,36 @@ import { CreateSmartCollectionDto } from './dto/smart-collection.dto';
 import { CreateMetafieldDto } from './dto/metafield.dto';
 import { brandKeyFromTitle } from '../../helpers/brandKey';
 
+// ---------------------------------------------------------------------------
+// Simple TTL cache — avoids repeated expensive Shopify calls within a window
+// ---------------------------------------------------------------------------
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
+class TtlCache {
+  private store = new Map<string, CacheEntry<any>>();
+
+  get<T>(key: string): T | null {
+    const entry = this.store.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      this.store.delete(key);
+      return null;
+    }
+    return entry.value as T;
+  }
+
+  set<T>(key: string, value: T, ttlMs: number): void {
+    this.store.set(key, { value, expiresAt: Date.now() + ttlMs });
+  }
+
+  delete(key: string): void {
+    this.store.delete(key);
+  }
+}
+
 @Injectable()
 export class ShopifyService {
   private shopify;
@@ -27,7 +57,19 @@ export class ShopifyService {
 
   private requestQueue: Promise<any> = Promise.resolve();
   private lastRequestAt = 0;
-  private readonly minRequestGapMs = 600;
+  private readonly minRequestGapMs = 550; // slightly under 600 for headroom
+
+  // Cache TTLs — tune these to your update frequency
+  private readonly cache = new TtlCache();
+  private readonly CACHE_TTL = {
+    collections: 5 * 60 * 1000, // 5 min  — brand/collection data rarely changes
+    sale: 3 * 60 * 1000, // 3 min  — sale products
+    bestsellers: 5 * 60 * 1000, // 5 min  — order-based, expensive to compute
+    products: 2 * 60 * 1000, // 2 min  — per-collection product lists
+  };
+
+  // Max simultaneous metafield fetches — 2 keeps us safely under 2 req/s
+  private readonly METAFIELD_CONCURRENCY = 2;
 
   constructor(private configService: ConfigService) {
     const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
@@ -59,6 +101,7 @@ export class ShopifyService {
           'write_customers',
           'read_gift_cards',
           'write_gift_cards',
+          'read_metafields',
         ],
         hostName: shopDomain.replace('https://', '').replace('http://', ''),
         apiVersion: ApiVersion.October23,
@@ -276,34 +319,47 @@ export class ShopifyService {
   // ==================== COLLECTIONS ====================
 
   async getCollections(query: CollectionQueryDto) {
+    const cacheKey = 'collections:all';
+    const cached = this.cache.get<any>(cacheKey);
+    if (cached) {
+      this.logger.log('getCollections: cache hit');
+      return cached;
+    }
+
     try {
       const client = new this.shopify.clients.Rest({ session: this.session });
 
       const limit = query.limit || 200;
       const params: any = { limit };
 
-      this.logger.log(`Fetching collections`);
+      this.logger.log(`Fetching collections from Shopify`);
 
-      const [customRes, smartRes] = await Promise.all([
+      // Two list requests, sequential through the rate-limit queue
+      const customRes = await this.enqueueShopifyRequest(() =>
         client.get({ path: 'custom_collections', query: params }),
+      );
+      const smartRes = await this.enqueueShopifyRequest(() =>
         client.get({ path: 'smart_collections', query: params }),
-      ]);
+      );
 
-      const custom = customRes.body?.custom_collections ?? [];
-      const smart = smartRes.body?.smart_collections ?? [];
+      const custom = (customRes as any).body?.custom_collections ?? [];
+      const smart = (smartRes as any).body?.smart_collections ?? [];
 
       const rawCollections = [
         ...custom.map((c: any) => ({ ...c, collection_type: 'custom' })),
         ...smart.map((c: any) => ({ ...c, collection_type: 'smart' })),
       ];
 
-      const allCollections = await Promise.all(
-        rawCollections.map(async (c: any) => {
+      console.log(rawCollections[0]);
+
+      const allCollections = await this.chunkMap(
+        rawCollections,
+        this.METAFIELD_CONCURRENCY,
+        async (c: any) => {
           const metafields = await this.getCollectionImageMetafields(
             String(c.id),
             c.collection_type,
           );
-
           return {
             id: String(c.id),
             title: c.title,
@@ -311,11 +367,7 @@ export class ShopifyService {
             image: c.image,
             collection_type: c.collection_type,
             brandKey: brandKeyFromTitle(c),
-
-            // expose all metafields too in case frontend wants the raw array
             metafields,
-
-            // flattened fields for easier frontend usage
             brandImage: this.getMetafieldValue(metafields, 'brandImage'),
             footerBrand: this.getMetafieldValue(metafields, 'footerBrand'),
             overviewCollection: this.getMetafieldValue(
@@ -323,7 +375,7 @@ export class ShopifyService {
               'overviewCollection',
             ),
           };
-        }),
+        },
       );
 
       const grouped = allCollections.reduce((acc: any, c: any) => {
@@ -332,7 +384,6 @@ export class ShopifyService {
           brandTitle: c.title.split(/[-|:–—]/)[0].trim(),
           collections: [],
         };
-
         acc[c.brandKey].collections.push(c);
         return acc;
       }, {});
@@ -351,21 +402,24 @@ export class ShopifyService {
           collectionIds: g.collections.map((x: any) => x.id),
           collectionHandles: g.collections.map((x: any) => x.handle),
           collectionTitles: g.collections.map((x: any) => x.title),
-
-          // useful for grouped brand pages
           collectionImages: g.collections.map(
             (x: any) => x.overviewCollection || x.image?.src || '',
           ),
-
           count: g.collections.length,
         };
       });
 
-      return {
+      const result = {
         collections: allCollections,
         brandGroups,
         count: allCollections.length,
       };
+      this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
+      this.logger.log(
+        `getCollections: cached ${allCollections.length} collections for 5 min`,
+      );
+
+      return result;
     } catch (error: any) {
       this.logger.error(
         'Failed to fetch collections:',
@@ -382,21 +436,28 @@ export class ShopifyService {
     try {
       const client = new this.shopify.clients.Rest({ session: this.session });
 
-      const resource =
-        collectionType === 'smart' ? 'smart_collection' : 'custom_collection';
+      const path =
+        collectionType === 'smart'
+          ? `smart_collections/${collectionId}/metafields`
+          : `custom_collections/${collectionId}/metafields`;
 
-      const res = await client.get({
-        path: 'metafields',
-        query: {
-          owner_id: collectionId,
-          owner_resource: resource,
-        },
-      });
+      const res = await client.get({ path });
 
       const metafields = res.body?.metafields ?? [];
 
+      this.logger.log(
+        `Collection ${collectionId} metafields: ${JSON.stringify(
+          metafields.map((m: any) => ({
+            namespace: m.namespace,
+            key: m.key,
+            value: m.value,
+            type: m.type,
+          })),
+        )}`,
+      );
+
       return metafields.filter((m: any) =>
-        ['brandImage', 'footerBrand', 'overviewCollection'].includes(m.key),
+        ['bannerImage', 'footerBrand', 'overviewCollection'].includes(m.key),
       );
     } catch (error: any) {
       this.logger.warn(
@@ -405,7 +466,7 @@ export class ShopifyService {
       return [];
     }
   }
-
+  
   private getMetafieldValue(metafields: any[], key: string): string {
     const found = metafields.find((m: any) => m?.key === key);
     return found?.value ?? '';
@@ -419,6 +480,8 @@ export class ShopifyService {
       const response = await client.get({
         path: `custom_collections/${collectionId}`,
       });
+
+      console.log(response);
 
       if (!response.body['custom_collection']) {
         throw new NotFoundException(
@@ -463,26 +526,34 @@ export class ShopifyService {
   //   }
   // }
 
-async getCollectionProducts(collectionId: string, limit: number = 50) {
-  try {
-    const client = new this.shopify.clients.Rest({ session: this.session });
+  async getCollectionProducts(collectionId: string, limit: number = 50) {
+    const cacheKey = `products:col:${collectionId}:${limit}`;
+    const cached = this.cache.get<any>(cacheKey);
+    if (cached) return cached;
 
-    this.logger.log(`Fetching products for collection: ${collectionId}`);
+    try {
+      const client = new this.shopify.clients.Rest({ session: this.session });
 
-    const response = await this.enqueueShopifyRequest(() =>
-      client.get({
-        path: `collections/${collectionId}/products`,
-        query: { limit },
-      }),
-    );
+      this.logger.log(`Fetching products for collection: ${collectionId}`);
 
-    const products = (response as any).body['products'] || [];
-    return { products, count: products.length };
-  } catch (error) {
-    this.logger.error('Failed to fetch collection products:', error.message);
-    throw new InternalServerErrorException('Failed to fetch collection products');
+      const response = await this.enqueueShopifyRequest(() =>
+        client.get({
+          path: `collections/${collectionId}/products`,
+          query: { limit },
+        }),
+      );
+
+      const products = (response as any).body['products'] || [];
+      const result = { products, count: products.length };
+      this.cache.set(cacheKey, result, this.CACHE_TTL.products);
+      return result;
+    } catch (error) {
+      this.logger.error('Failed to fetch collection products:', error.message);
+      throw new InternalServerErrorException(
+        'Failed to fetch collection products',
+      );
+    }
   }
-}
 
   // ==================== CUSTOMERS ====================
 
@@ -1020,43 +1091,45 @@ async getCollectionProducts(collectionId: string, limit: number = 50) {
   /**
    * Get collection by handle (user-friendly URL)
    */
-async getCollectionByHandle(handle: string) {
-try {
-  const client = new this.shopify.clients.Rest({ session: this.session });
+  async getCollectionByHandle(handle: string) {
+    try {
+      const client = new this.shopify.clients.Rest({ session: this.session });
 
-  this.logger.log(`Fetching collection with handle: ${handle}`);
+      this.logger.log(`Fetching collection with handle: ${handle}`);
 
-  let response = await this.enqueueShopifyRequest(() =>
-    client.get({
-      path: 'custom_collections',
-      query: { handle },
-    }),
-  );
-
-  let collections = (response as any).body['custom_collections'] || [];
-
-    if (collections.length === 0) {
-      response = await this.enqueueShopifyRequest(() =>
+      let response = await this.enqueueShopifyRequest(() =>
         client.get({
-          path: 'smart_collections',
+          path: 'custom_collections',
           query: { handle },
         }),
       );
 
-      collections = (response as any).body['smart_collections'] || [];
-    }
+      let collections = (response as any).body['custom_collections'] || [];
 
-    if (collections.length === 0) {
-      throw new NotFoundException(`Collection with handle '${handle}' not found`);
-    }
+      if (collections.length === 0) {
+        response = await this.enqueueShopifyRequest(() =>
+          client.get({
+            path: 'smart_collections',
+            query: { handle },
+          }),
+        );
 
-    return collections[0];
-  } catch (error) {
-    if (error instanceof NotFoundException) throw error;
-    this.logger.error('Failed to fetch collection by handle:', error.message);
-    throw new InternalServerErrorException('Failed to fetch collection');
+        collections = (response as any).body['smart_collections'] || [];
+      }
+
+      if (collections.length === 0) {
+        throw new NotFoundException(
+          `Collection with handle '${handle}' not found`,
+        );
+      }
+
+      return collections[0];
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      this.logger.error('Failed to fetch collection by handle:', error.message);
+      throw new InternalServerErrorException('Failed to fetch collection');
+    }
   }
-}
 
   /**
    * Get products from multiple collections (for homepage sections)
@@ -1280,26 +1353,30 @@ try {
    * This uses order data to calculate bestsellers
    */
   async getBestsellers(limit: number = 10, days: number = 30) {
+    const cacheKey = `bestsellers:${limit}:${days}`;
+    const cached = this.cache.get<any>(cacheKey);
+    if (cached) return cached;
+
     try {
       const client = new this.shopify.clients.Rest({ session: this.session });
 
       this.logger.log(`Calculating bestsellers for last ${days} days`);
 
-      // Calculate date range
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - days);
 
-      // Fetch recent orders
-      const ordersResponse = await client.get({
-        path: 'orders',
-        query: {
-          status: 'any',
-          limit: 250,
-          created_at_min: startDate.toISOString(),
-        },
-      });
+      const ordersResponse = await this.enqueueShopifyRequest(() =>
+        client.get({
+          path: 'orders',
+          query: {
+            status: 'any',
+            limit: 250,
+            created_at_min: startDate.toISOString(),
+          },
+        }),
+      );
 
-      const orders = ordersResponse.body['orders'] || [];
+      const orders = (ordersResponse as any).body['orders'] || [];
 
       // Count product sales
       const productSales = {};
@@ -1327,33 +1404,33 @@ try {
         .sort((a: any, b: any) => b.quantity_sold - a.quantity_sold)
         .slice(0, limit);
 
-      // Fetch full product details
-      const bestsellers = await Promise.all(
-        sortedProducts.map(async (item: any) => {
-          try {
-            const product = await this.getProductById(item.product_id);
-            return {
-              ...product,
-              sales_data: {
-                quantity_sold: item.quantity_sold,
-                revenue: item.revenue,
-              },
-            };
-          } catch (error) {
-            this.logger.warn(
-              `Failed to fetch product ${item.product_id}:`,
-              error.message,
-            );
-            return null;
-          }
-        }),
-      );
+      // Fetch full product details sequentially to avoid rate limits
+      const bestsellers: any[] = [];
+      for (const item of sortedProducts as any[]) {
+        try {
+          const product = await this.getProductById(item.product_id);
+          bestsellers.push({
+            ...product,
+            sales_data: {
+              quantity_sold: item.quantity_sold,
+              revenue: item.revenue,
+            },
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Failed to fetch product ${item.product_id}:`,
+            error.message,
+          );
+        }
+      }
 
-      return {
-        bestsellers: bestsellers.filter((p) => p !== null),
-        count: bestsellers.filter((p) => p !== null).length,
+      const result = {
+        bestsellers,
+        count: bestsellers.length,
         period: `${days} days`,
       };
+      this.cache.set(cacheKey, result, this.CACHE_TTL.bestsellers);
+      return result;
     } catch (error) {
       this.logger.error('Failed to calculate bestsellers:', error.message);
       throw new InternalServerErrorException('Failed to calculate bestsellers');
@@ -1366,19 +1443,24 @@ try {
    * Get sale products (variant.compare_at_price > variant.price)
    */
   async getSaleProducts(limit = 20, minDiscount = 0, brand?: string) {
+    const normalizedBrand = String(brand ?? '')
+      .trim()
+      .toLowerCase();
+    const cacheKey = `sale:${limit}:${minDiscount}:${normalizedBrand}`;
+    const cached = this.cache.get<any>(cacheKey);
+    if (cached) return cached;
+
     try {
       const client = new this.shopify.clients.Rest({ session: this.session });
 
-      const normalizedBrand = String(brand ?? '')
-        .trim()
-        .toLowerCase();
+      const res = await this.enqueueShopifyRequest(() =>
+        client.get({
+          path: 'products',
+          query: { limit: 250, status: 'active' },
+        }),
+      );
 
-      const res = await client.get({
-        path: 'products',
-        query: { limit: 250, status: 'active' },
-      });
-
-      const products = res.body['products'] ?? [];
+      const products = (res as any).body['products'] ?? [];
 
       const sale = products
         .filter((p: any) => {
@@ -1435,13 +1517,15 @@ try {
         )
         .slice(0, limit);
 
-      return {
+      const result = {
         sale,
         count: sale.length,
         minDiscount,
         brand: normalizedBrand || null,
         source: 'compare_at_price',
       };
+      this.cache.set(cacheKey, result, this.CACHE_TTL.sale);
+      return result;
     } catch (error) {
       this.logger.error('Failed to fetch sale products:', error.message);
       throw new InternalServerErrorException('Failed to fetch sale products');
@@ -1546,6 +1630,44 @@ try {
       title: found.title,
       price: found.price,
     };
+  }
+
+  /**
+   * Runs an async operation over an array in parallel chunks of `concurrency`.
+   * Safer than Promise.all (no burst) while faster than fully sequential.
+   */
+  private async chunkMap<T, R>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T, index: number) => Promise<R>,
+  ): Promise<R[]> {
+    const results: R[] = [];
+    for (let i = 0; i < items.length; i += concurrency) {
+      const chunk = items.slice(i, i + concurrency);
+      const chunkResults = await Promise.all(
+        chunk.map((item, j) => fn(item, i + j)),
+      );
+      results.push(...chunkResults);
+    }
+    return results;
+  }
+
+  /**
+   * Invalidate cached data manually (e.g. after a webhook or admin update).
+   * Call this from a dedicated POST /shopify/cache/invalidate endpoint if needed.
+   */
+  invalidateCache(key?: 'collections' | 'sale' | 'bestsellers' | 'all'): void {
+    if (!key || key === 'all') {
+      this.cache.delete('collections:all');
+      this.logger.log('Cache invalidated: all');
+    } else if (key === 'collections') {
+      this.cache.delete('collections:all');
+      this.logger.log('Cache invalidated: collections');
+    } else {
+      this.logger.log(
+        `Cache invalidate hint received for: ${key} (TTL-based, will expire naturally)`,
+      );
+    }
   }
 
   private sleep(ms: number) {
