@@ -139,6 +139,41 @@ export class ShopifyController {
     return this.shopifyService.getCollectionProducts(id, limit);
   }
 
+  @Get('collections/sub-collections')
+  @ApiOperation({
+    summary: 'Get summary info for multiple sub-collections by IDs',
+  })
+  @ApiQuery({
+    name: 'ids',
+    required: true,
+    type: String,
+    description: 'Comma-separated collection IDs (e.g. "123,456,789")',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Array of sub-collection summaries',
+    schema: {
+      example: {
+        subCollections: [
+          {
+            id: '123456789',
+            handle: 'davines-oi',
+            title: 'Davines OI',
+            description: 'The Absolute Beautifying line...',
+            imageUrl: 'https://cdn.shopify.com/...',
+          },
+        ],
+      },
+    },
+  })
+  async getSubCollections(@Query('ids') ids: string) {
+    const idList = (ids ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return this.shopifyService.getSubCollectionsSummary(idList);
+  }
+
   // ==================== CUSTOMERS ====================
 
   @Get('customers')
@@ -569,6 +604,12 @@ export class ShopifyController {
     required: false,
     type: Number,
     description: 'Minimum discount percent (default 0)',
+  })
+    @ApiQuery({
+    name: 'brand',
+    required: false,
+    type: String,
+    description: 'Filter by brand',
   })
   @ApiResponse({
     status: 200,

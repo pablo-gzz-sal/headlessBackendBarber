@@ -661,69 +661,294 @@ export class ShopifyService {
     }
   }
 
+  // async getCollectionByHandle(handle: string) {
+  //   try {
+  //     const client = new this.shopify.clients.Rest({ session: this.session });
+
+  //     this.logger.log(`Fetching collection with handle: ${handle}`);
+
+  //     let collectionType: 'custom' | 'smart' = 'custom';
+
+  //     let response = await this.enqueueShopifyRequest(() =>
+  //       client.get({
+  //         path: 'custom_collections',
+  //         query: { handle },
+  //       }),
+  //     );
+
+  //     let collections = (response as any).body['custom_collections'] || [];
+
+  //     if (collections.length === 0) {
+  //       response = await this.enqueueShopifyRequest(() =>
+  //         client.get({
+  //           path: 'smart_collections',
+  //           query: { handle },
+  //         }),
+  //       );
+
+  //       collections = (response as any).body['smart_collections'] || [];
+  //       collectionType = 'smart';
+  //     }
+
+  //     if (collections.length === 0) {
+  //       throw new NotFoundException(
+  //         `Collection with handle '${handle}' not found`,
+  //       );
+  //     }
+
+  //     const collection = collections[0];
+
+  //     const metafields = await this.getCollectionImageMetafields(
+  //       String(collection.id),
+  //       collectionType,
+  //     );
+
+  //     return {
+  //       ...collection,
+  //       id: String(collection.id),
+  //       collection_type: collectionType,
+  //       metafields,
+  //       bannerImage: this.getMetafieldValue(metafields, 'bannerimage'),
+  //       footerBrand: this.getMetafieldValue(metafields, 'footerbrand'),
+  //       overviewCollection: this.getMetafieldValue(
+  //         metafields,
+  //         'overviewcollection',
+  //       ),
+  //     };
+  //   } catch (error) {
+  //     if (error instanceof NotFoundException) throw error;
+  //     this.logger.error('Failed to fetch collection by handle:', error.message);
+  //     throw new InternalServerErrorException('Failed to fetch collection');
+  //   }
+  // }
+
+  // ==================== CUSTOMERS ====================
+
   async getCollectionByHandle(handle: string) {
+    const cacheKey = `collection:handle:${handle}`;
+    const cached = this.cache.get<any>(cacheKey);
+    if (cached) return cached;
+
     try {
-      const client = new this.shopify.clients.Rest({ session: this.session });
-
-      this.logger.log(`Fetching collection with handle: ${handle}`);
-
-      let collectionType: 'custom' | 'smart' = 'custom';
-
-      let response = await this.enqueueShopifyRequest(() =>
-        client.get({
-          path: 'custom_collections',
-          query: { handle },
-        }),
+      const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+      const accessToken = this.configService.get<string>(
+        'SHOPIFY_ACCESS_TOKEN',
       );
 
-      let collections = (response as any).body['custom_collections'] || [];
+      const normalizedDomain = shopDomain!
+        .replace(/^https?:\/\//, '')
+        .replace(/\/$/, '');
+      const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
 
-      if (collections.length === 0) {
-        response = await this.enqueueShopifyRequest(() =>
-          client.get({
-            path: 'smart_collections',
-            query: { handle },
-          }),
-        );
+      const graphqlQuery = `
+      query getCollectionByHandle($handle: String!) {
+        collectionByHandle(handle: $handle) {
+          id
+          legacyResourceId
+          title
+          handle
+          descriptionHtml
+          image { url altText width height }
+          ruleSet { rules { column relation condition } }
+          metafields(first: 20, namespace: "custom") {
+            edges {
+              node {
+                key
+                value
+                type
+                references(first: 25) {
+                  edges {
+                    node {
+                      ... on Collection {
+                        id
+                        legacyResourceId
+                        handle
+                        title
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
 
-        collections = (response as any).body['smart_collections'] || [];
-        collectionType = 'smart';
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': accessToken!,
+        },
+        body: JSON.stringify({ query: graphqlQuery, variables: { handle } }),
+      });
+
+      const json = await response.json();
+      if (json.errors?.length) {
+        this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
+        throw new Error('Shopify GraphQL returned errors');
       }
 
-      if (collections.length === 0) {
+      const node = json?.data?.collectionByHandle;
+      if (!node) {
         throw new NotFoundException(
           `Collection with handle '${handle}' not found`,
         );
       }
 
-      const collection = collections[0];
+      const metafieldEdges = node.metafields?.edges ?? [];
+      const metafields = metafieldEdges.map((e: any) => e.node);
 
-      const metafields = await this.getCollectionImageMetafields(
-        String(collection.id),
-        collectionType,
+      // Resolve subCollections from the list.collection_reference metafield
+      const subCollectionsNode = metafields.find(
+        (m: any) => m.key === 'subCollections',
       );
+      const subCollections =
+        subCollectionsNode?.references?.edges?.map((e: any) => ({
+          id: String(e.node.legacyResourceId),
+          gid: e.node.id,
+          handle: e.node.handle,
+          title: e.node.title,
+        })) ?? [];
 
-      return {
-        ...collection,
-        id: String(collection.id),
-        collection_type: collectionType,
+      const hasRuleSet = node.ruleSet?.rules?.length > 0;
+
+      const result = {
+        id: String(node.legacyResourceId),
+        gid: node.id,
+        title: node.title,
+        handle: node.handle,
+        body_html: node.descriptionHtml,
+        description: node.descriptionHtml,
+        image: node.image
+          ? {
+              src: node.image.url,
+              alt: node.image.altText,
+              width: node.image.width,
+              height: node.image.height,
+            }
+          : null,
+        collection_type: hasRuleSet ? 'smart' : 'custom',
         metafields,
-        bannerImage: this.getMetafieldValue(metafields, 'bannerimage'),
-        footerBrand: this.getMetafieldValue(metafields, 'footerbrand'),
-        overviewCollection: this.getMetafieldValue(
+        bannerImage: this.getMetafieldValueInsensitive(
           metafields,
-          'overviewcollection',
+          'bannerImage',
         ),
+        footerBrand: this.getMetafieldValueInsensitive(
+          metafields,
+          'footerBrand',
+        ),
+        overviewCollection: this.getMetafieldValueInsensitive(
+          metafields,
+          'overviewCollection',
+        ),
+        subCollections, // <-- array of { id, gid, handle, title }
       };
-    } catch (error) {
+
+      this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
+      return result;
+    } catch (error: any) {
       if (error instanceof NotFoundException) throw error;
-      this.logger.error('Failed to fetch collection by handle:', error.message);
+      this.logger.error(
+        'Failed to fetch collection by handle:',
+        error?.message ?? error,
+      );
       throw new InternalServerErrorException('Failed to fetch collection');
     }
   }
 
-  // ==================== CUSTOMERS ====================
+  // Case-insensitive helper (GraphQL preserves camelCase but be safe)
+  private getMetafieldValueInsensitive(metafields: any[], key: string): string {
+    const lower = key.toLowerCase();
+    const found = metafields.find((m: any) => m?.key?.toLowerCase() === lower);
+    return found?.value ?? '';
+  }
 
+  async getSubCollectionsSummary(ids: string[]) {
+    if (!ids?.length) return { subCollections: [] };
+
+    const cacheKey = `subcollections:${ids.sort().join(',')}`;
+    const cached = this.cache.get<any>(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+      const accessToken = this.configService.get<string>(
+        'SHOPIFY_ACCESS_TOKEN',
+      );
+
+      const normalizedDomain = shopDomain!
+        .replace(/^https?:\/\//, '')
+        .replace(/\/$/, '');
+      const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
+
+      const gids = ids.map((id) => `gid://shopify/Collection/${id}`);
+
+      const graphqlQuery = `
+      query getSubCollections($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on Collection {
+            id
+            legacyResourceId
+            title
+            handle
+            descriptionHtml
+            image { url altText }
+            metafields(first: 10, namespace: "custom") {
+              edges { node { key value type } }
+            }
+          }
+        }
+      }
+    `;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': accessToken!,
+        },
+        body: JSON.stringify({ query: graphqlQuery, variables: { ids: gids } }),
+      });
+
+      const json = await response.json();
+      if (json.errors?.length) {
+        this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
+        throw new Error('Shopify GraphQL returned errors');
+      }
+
+      const nodes = (json?.data?.nodes ?? []).filter(Boolean);
+
+      const subCollections = nodes.map((n: any) => {
+        const metafields = (n.metafields?.edges ?? []).map((e: any) => e.node);
+        const overview = this.getMetafieldValueInsensitive(
+          metafields,
+          'overviewCollection',
+        );
+        return {
+          id: String(n.legacyResourceId),
+          handle: n.handle,
+          title: n.title,
+          description: n.descriptionHtml ?? '',
+          imageUrl: overview || n.image?.url || '',
+        };
+      });
+
+      const result = { subCollections };
+      this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
+      return result;
+    } catch (error: any) {
+      this.logger.error(
+        'Failed to fetch sub-collections:',
+        error?.message ?? error,
+      );
+      throw new InternalServerErrorException('Failed to fetch sub-collections');
+    }
+  }
+
+
+  //CUSTOMERS//
   async getCustomers(query: CustomerQueryDto) {
     try {
       const client = new this.shopify.clients.Rest({ session: this.session });
@@ -1567,98 +1792,221 @@ export class ShopifyService {
 
   // ==================== SALE ====================
 
+  // /**
+  //  * Get sale products (variant.compare_at_price > variant.price)
+  //  */
+  // async getSaleProducts(limit = 40, minDiscount = 0, brand?: string) {
+  //   const normalizedBrand = String(brand ?? '')
+  //     .trim()
+  //     .toLowerCase();
+  //   const cacheKey = `sale:${limit}:${minDiscount}:${normalizedBrand}`;
+  //   const cached = this.cache.get<any>(cacheKey);
+  //   if (cached) return cached;
+
+  //   try {
+  //     const client = new this.shopify.clients.Rest({ session: this.session });
+
+  //     const res = await this.enqueueShopifyRequest(() =>
+  //       client.get({
+  //         path: 'products',
+  //         query: { limit: 250, status: 'active' },
+  //       }),
+  //     );
+
+  //     const products = (res as any).body['products'] ?? [];
+
+  //     const sale = products
+  //       .filter((p: any) => {
+  //         if (!normalizedBrand) return true;
+
+  //         const handle = String(p?.handle ?? '')
+  //           .trim()
+  //           .toLowerCase();
+
+  //         const firstPart = handle.split('-')[0];
+  //         return firstPart === normalizedBrand;
+  //       })
+  //       .map((p: any) => {
+  //         const variants = Array.isArray(p?.variants) ? p.variants : [];
+
+  //         let bestDiscountPct = -1;
+  //         let bestPrice: number | null = null;
+  //         let bestCompareAt: number | null = null;
+
+  //         for (const v of variants) {
+  //           const price = Number(v?.price);
+  //           const compareAt = Number(v?.compare_at_price);
+
+  //           if (!Number.isFinite(price) || !Number.isFinite(compareAt))
+  //             continue;
+  //           if (compareAt <= price) continue;
+
+  //           const pct = ((compareAt - price) / compareAt) * 100;
+
+  //           if (pct > bestDiscountPct) {
+  //             bestDiscountPct = pct;
+  //             bestPrice = price;
+  //             bestCompareAt = compareAt;
+  //           }
+  //         }
+
+  //         if (bestDiscountPct < 0) return null;
+  //         if (bestDiscountPct < minDiscount) return null;
+
+  //         return {
+  //           ...p,
+  //           sale_data: {
+  //             best_price: bestPrice,
+  //             best_compare_at_price: bestCompareAt,
+  //             discount_percent: Number(bestDiscountPct.toFixed(2)),
+  //           },
+  //         };
+  //       })
+  //       .filter(Boolean)
+  //       .sort(
+  //         (a: any, b: any) =>
+  //           (b.sale_data?.discount_percent ?? 0) -
+  //           (a.sale_data?.discount_percent ?? 0),
+  //       )
+  //       .slice(0, limit);
+
+  //     const result = {
+  //       sale,
+  //       count: sale.length,
+  //       minDiscount,
+  //       brand: normalizedBrand || null,
+  //       source: 'compare_at_price',
+  //     };
+  //     this.cache.set(cacheKey, result, this.CACHE_TTL.sale);
+  //     return result;
+  //   } catch (error) {
+  //     this.logger.error('Failed to fetch sale products:', error.message);
+  //     throw new InternalServerErrorException('Failed to fetch sale products');
+  //   }
+  // }
+
   /**
-   * Get sale products (variant.compare_at_price > variant.price)
-   */
-  async getSaleProducts(limit = 20, minDiscount = 0, brand?: string) {
-    const normalizedBrand = String(brand ?? '')
-      .trim()
-      .toLowerCase();
-    const cacheKey = `sale:${limit}:${minDiscount}:${normalizedBrand}`;
-    const cached = this.cache.get<any>(cacheKey);
-    if (cached) return cached;
+ * Get sale products (variant.compare_at_price > variant.price)
+ * Paginates through the entire active catalog so no sale items are missed.
+ */
+async getSaleProducts(limit = 40, minDiscount = 0, brand?: string) {
+  const normalizedBrand = String(brand ?? '')
+    .trim()
+    .toLowerCase();
+  const cacheKey = `sale:${limit}:${minDiscount}:${normalizedBrand}`;
+  const cached = this.cache.get<any>(cacheKey);
+  if (cached) return cached;
 
-    try {
-      const client = new this.shopify.clients.Rest({ session: this.session });
+  try {
+    const client = new this.shopify.clients.Rest({ session: this.session });
 
-      const res = await this.enqueueShopifyRequest(() =>
-        client.get({
-          path: 'products',
-          query: { limit: 250, status: 'active' },
-        }),
+    // --- Paginate through ALL active products ---
+    const allProducts: any[] = [];
+    let pageInfo: string | undefined = undefined;
+    const MAX_PAGES = 20; // safety cap: 20 * 250 = 5,000 products
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const query: Record<string, any> = { limit: 250 };
+
+      // On the first request, filter by status. On subsequent requests,
+      // Shopify REQUIRES that only `page_info` and `limit` be sent.
+      if (pageInfo) {
+        query.page_info = pageInfo;
+      } else {
+        query.status = 'active';
+      }
+
+      const res: any = await this.enqueueShopifyRequest(() =>
+        client.get({ path: 'products', query }),
       );
 
-      const products = (res as any).body['products'] ?? [];
+      const pageProducts = res.body?.products ?? [];
+      allProducts.push(...pageProducts);
 
-      const sale = products
-        .filter((p: any) => {
-          if (!normalizedBrand) return true;
+      // Shopify returns pagination info in the Link header.
+      // The shopify-api-node client exposes it as res.pageInfo.nextPage.query.page_info
+      const nextPageInfo =
+        res?.pageInfo?.nextPage?.query?.page_info ??
+        res?.pageInfo?.nextPageUrl ??
+        null;
 
-          const handle = String(p?.handle ?? '')
-            .trim()
-            .toLowerCase();
-
-          const firstPart = handle.split('-')[0];
-          return firstPart === normalizedBrand;
-        })
-        .map((p: any) => {
-          const variants = Array.isArray(p?.variants) ? p.variants : [];
-
-          let bestDiscountPct = -1;
-          let bestPrice: number | null = null;
-          let bestCompareAt: number | null = null;
-
-          for (const v of variants) {
-            const price = Number(v?.price);
-            const compareAt = Number(v?.compare_at_price);
-
-            if (!Number.isFinite(price) || !Number.isFinite(compareAt))
-              continue;
-            if (compareAt <= price) continue;
-
-            const pct = ((compareAt - price) / compareAt) * 100;
-
-            if (pct > bestDiscountPct) {
-              bestDiscountPct = pct;
-              bestPrice = price;
-              bestCompareAt = compareAt;
-            }
-          }
-
-          if (bestDiscountPct < 0) return null;
-          if (bestDiscountPct < minDiscount) return null;
-
-          return {
-            ...p,
-            sale_data: {
-              best_price: bestPrice,
-              best_compare_at_price: bestCompareAt,
-              discount_percent: Number(bestDiscountPct.toFixed(2)),
-            },
-          };
-        })
-        .filter(Boolean)
-        .sort(
-          (a: any, b: any) =>
-            (b.sale_data?.discount_percent ?? 0) -
-            (a.sale_data?.discount_percent ?? 0),
-        )
-        .slice(0, limit);
-
-      const result = {
-        sale,
-        count: sale.length,
-        minDiscount,
-        brand: normalizedBrand || null,
-        source: 'compare_at_price',
-      };
-      this.cache.set(cacheKey, result, this.CACHE_TTL.sale);
-      return result;
-    } catch (error) {
-      this.logger.error('Failed to fetch sale products:', error.message);
-      throw new InternalServerErrorException('Failed to fetch sale products');
+      if (!nextPageInfo || pageProducts.length < 250) break;
+      pageInfo = nextPageInfo;
     }
+
+    this.logger.log(
+      `Fetched ${allProducts.length} active products for sale scan`,
+    );
+
+    // --- Filter + compute best discount (unchanged logic) ---
+    const sale = allProducts
+      .filter((p: any) => {
+        if (!normalizedBrand) return true;
+
+        const handle = String(p?.handle ?? '')
+          .trim()
+          .toLowerCase();
+
+        const firstPart = handle.split('-')[0];
+        return firstPart === normalizedBrand;
+      })
+      .map((p: any) => {
+        const variants = Array.isArray(p?.variants) ? p.variants : [];
+
+        let bestDiscountPct = -1;
+        let bestPrice: number | null = null;
+        let bestCompareAt: number | null = null;
+
+        for (const v of variants) {
+          const price = Number(v?.price);
+          const compareAt = Number(v?.compare_at_price);
+
+          if (!Number.isFinite(price) || !Number.isFinite(compareAt)) continue;
+          if (compareAt <= price) continue;
+
+          const pct = ((compareAt - price) / compareAt) * 100;
+
+          if (pct > bestDiscountPct) {
+            bestDiscountPct = pct;
+            bestPrice = price;
+            bestCompareAt = compareAt;
+          }
+        }
+
+        if (bestDiscountPct < 0) return null;
+        if (bestDiscountPct < minDiscount) return null;
+
+        return {
+          ...p,
+          sale_data: {
+            best_price: bestPrice,
+            best_compare_at_price: bestCompareAt,
+            discount_percent: Number(bestDiscountPct.toFixed(2)),
+          },
+        };
+      })
+      .filter(Boolean)
+      .sort(
+        (a: any, b: any) =>
+          (b.sale_data?.discount_percent ?? 0) -
+          (a.sale_data?.discount_percent ?? 0),
+      )
+      .slice(0, limit);
+
+    const result = {
+      sale,
+      count: sale.length,
+      minDiscount,
+      brand: normalizedBrand || null,
+      source: 'compare_at_price',
+    };
+    this.cache.set(cacheKey, result, this.CACHE_TTL.sale);
+    return result;
+  } catch (error) {
+    this.logger.error('Failed to fetch sale products:', error.message);
+    throw new InternalServerErrorException('Failed to fetch sale products');
   }
+}
 
   // ==================== VARIANTS ====================
 
