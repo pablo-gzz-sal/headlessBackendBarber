@@ -18,6 +18,7 @@ import { RecommendationQueryDto } from './dto/recommendation-query.dto';
 import { CreateSmartCollectionDto } from './dto/smart-collection.dto';
 import { CreateMetafieldDto } from './dto/metafield.dto';
 import { brandKeyFromTitle } from '../../helpers/brandKey';
+import { log } from 'console';
 
 // ---------------------------------------------------------------------------
 // Simple TTL cache — avoids repeated expensive Shopify calls within a window
@@ -756,18 +757,6 @@ export class ShopifyService {
                 key
                 value
                 type
-                references(first: 25) {
-                  edges {
-                    node {
-                      ... on Collection {
-                        id
-                        legacyResourceId
-                        handle
-                        title
-                      }
-                    }
-                  }
-                }
               }
             }
           }
@@ -785,6 +774,10 @@ export class ShopifyService {
       });
 
       const json = await response.json();
+
+      console.log(
+        `GraphQL response for collectionByHandle(${handle}): ${JSON.stringify(json)}`,
+      );
       if (json.errors?.length) {
         this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
         throw new Error('Shopify GraphQL returned errors');
@@ -800,17 +793,25 @@ export class ShopifyService {
       const metafieldEdges = node.metafields?.edges ?? [];
       const metafields = metafieldEdges.map((e: any) => e.node);
 
-      // Resolve subCollections from the list.collection_reference metafield
+      // Single line text (List) stores a JSON array of numeric ID strings
       const subCollectionsNode = metafields.find(
-        (m: any) => m.key === 'subCollections',
+        (m: any) => m.key?.toLowerCase() === 'subcollections',
       );
-      const subCollections =
-        subCollectionsNode?.references?.edges?.map((e: any) => ({
-          id: String(e.node.legacyResourceId),
-          gid: e.node.id,
-          handle: e.node.handle,
-          title: e.node.title,
-        })) ?? [];
+      let subCollections: { id: string }[] = [];
+      if (subCollectionsNode?.value) {
+        try {
+          const parsed = JSON.parse(subCollectionsNode.value);
+          if (Array.isArray(parsed)) {
+            subCollections = parsed.map((id: any) => ({
+              id: String(id).replace(/\D/g, ''),
+            }));
+          }
+        } catch {
+          this.logger.warn(
+            `Failed to parse subCollections value: ${subCollectionsNode.value}`,
+          );
+        }
+      }
 
       const hasRuleSet = node.ruleSet?.rules?.length > 0;
 
@@ -843,7 +844,7 @@ export class ShopifyService {
           metafields,
           'overviewCollection',
         ),
-        subCollections, // <-- array of { id, gid, handle, title }
+        subCollections,
       };
 
       this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
@@ -866,26 +867,23 @@ export class ShopifyService {
   }
 
   async getSubCollectionsSummary(ids: string[]) {
-    if (!ids?.length) return { subCollections: [] };
+  if (!ids?.length) return { subCollections: [] };
 
-    const cacheKey = `subcollections:${ids.sort().join(',')}`;
-    const cached = this.cache.get<any>(cacheKey);
-    if (cached) return cached;
+  const cacheKey = `subcollections:${[...ids].sort().join(',')}`;
+  const cached = this.cache.get<any>(cacheKey);
+  if (cached) return cached;
 
-    try {
-      const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
-      const accessToken = this.configService.get<string>(
-        'SHOPIFY_ACCESS_TOKEN',
-      );
+  try {
+    const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+    const accessToken = this.configService.get<string>('SHOPIFY_ACCESS_TOKEN');
 
-      const normalizedDomain = shopDomain!
-        .replace(/^https?:\/\//, '')
-        .replace(/\/$/, '');
-      const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
+    const normalizedDomain = shopDomain!.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
 
-      const gids = ids.map((id) => `gid://shopify/Collection/${id}`);
+    const gids = ids.map((id) => `gid://shopify/Collection/${id}`);
+    this.logger.log(`GIDs being sent: ${JSON.stringify(gids)}`);
 
-      const graphqlQuery = `
+    const graphqlQuery = `
       query getSubCollections($ids: [ID!]!) {
         nodes(ids: $ids) {
           ... on Collection {
@@ -903,50 +901,137 @@ export class ShopifyService {
       }
     `;
 
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Shopify-Access-Token': accessToken!,
-        },
-        body: JSON.stringify({ query: graphqlQuery, variables: { ids: gids } }),
-      });
+    this.logger.log(`Fetching sub-collections for ${gids.length} GIDs`);
 
-      const json = await response.json();
-      if (json.errors?.length) {
-        this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
-        throw new Error('Shopify GraphQL returned errors');
-      }
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': accessToken!,
+      },
+      body: JSON.stringify({ query: graphqlQuery, variables: { ids: gids } }),
+    });
 
-      const nodes = (json?.data?.nodes ?? []).filter(Boolean);
-
-      const subCollections = nodes.map((n: any) => {
-        const metafields = (n.metafields?.edges ?? []).map((e: any) => e.node);
-        const overview = this.getMetafieldValueInsensitive(
-          metafields,
-          'overviewCollection',
-        );
-        return {
-          id: String(n.legacyResourceId),
-          handle: n.handle,
-          title: n.title,
-          description: n.descriptionHtml ?? '',
-          imageUrl: overview || n.image?.url || '',
-        };
-      });
-
-      const result = { subCollections };
-      this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
-      return result;
-    } catch (error: any) {
-      this.logger.error(
-        'Failed to fetch sub-collections:',
-        error?.message ?? error,
-      );
-      throw new InternalServerErrorException('Failed to fetch sub-collections');
+    const json = await response.json();
+    if (json.errors?.length) {
+      this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
+      throw new Error('Shopify GraphQL returned errors');
     }
-  }
 
+    const nodes = (json?.data?.nodes ?? []).filter(Boolean);
+    this.logger.log(`Resolved ${nodes.length} sub-collection nodes`);
+
+    const subCollections = nodes.map((n: any) => {
+      const metafields = (n.metafields?.edges ?? []).map((e: any) => e.node);
+
+      // Case-insensitive lookup — Shopify lowercases keys in REST, GraphQL varies
+      const getVal = (key: string) => {
+        const lower = key.toLowerCase();
+        return metafields.find((m: any) => m?.key?.toLowerCase() === lower)?.value ?? '';
+      };
+
+      const overviewUrl = getVal('overviewCollection') || getVal('overviewcollection');
+      const imageUrl = overviewUrl || n.image?.url || '';
+
+      return {
+        id: String(n.legacyResourceId),
+        handle: n.handle,
+        title: n.title,
+        description: n.descriptionHtml ?? '',
+        imageUrl,
+      };
+    });
+
+    const result = { subCollections };
+    this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
+    return result;
+  } catch (error: any) {
+    this.logger.error('Failed to fetch sub-collections:', error?.message ?? error);
+    throw new InternalServerErrorException('Failed to fetch sub-collections');
+  }
+}
+
+  // async getSubCollectionsSummary(ids: string[]) {
+  //   if (!ids?.length) return { subCollections: [] };
+
+  //   const cacheKey = `subcollections:${ids.sort().join(',')}`;
+  //   const cached = this.cache.get<any>(cacheKey);
+  //   if (cached) return cached;
+
+  //   try {
+  //     const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+  //     const accessToken = this.configService.get<string>(
+  //       'SHOPIFY_ACCESS_TOKEN',
+  //     );
+
+  //     const normalizedDomain = shopDomain!
+  //       .replace(/^https?:\/\//, '')
+  //       .replace(/\/$/, '');
+  //     const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
+
+  //     const gids = ids.map((id) => `gid://shopify/Collection/${id}`);
+
+  //     const graphqlQuery = `
+  //     query getSubCollections($ids: [ID!]!) {
+  //       nodes(ids: $ids) {
+  //         ... on Collection {
+  //           id
+  //           legacyResourceId
+  //           title
+  //           handle
+  //           descriptionHtml
+  //           image { url altText }
+  //           metafields(first: 10, namespace: "custom") {
+  //             edges { node { key value type } }
+  //           }
+  //         }
+  //       }
+  //     }
+  //   `;
+
+  //     const response = await fetch(endpoint, {
+  //       method: 'POST',
+  //       headers: {
+  //         'Content-Type': 'application/json',
+  //         'X-Shopify-Access-Token': accessToken!,
+  //       },
+  //       body: JSON.stringify({ query: graphqlQuery, variables: { ids: gids } }),
+  //     });
+
+  //     const json = await response.json();
+  //     if (json.errors?.length) {
+  //       this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
+  //       throw new Error('Shopify GraphQL returned errors');
+  //     }
+
+  //     const nodes = (json?.data?.nodes ?? []).filter(Boolean);
+
+  //     const subCollections = nodes.map((n: any) => {
+  //       const metafields = (n.metafields?.edges ?? []).map((e: any) => e.node);
+  //       const overview = this.getMetafieldValueInsensitive(
+  //         metafields,
+  //         'overviewCollection',
+  //       );
+  //       return {
+  //         id: String(n.legacyResourceId),
+  //         handle: n.handle,
+  //         title: n.title,
+  //         description: n.descriptionHtml ?? '',
+  //         imageUrl: overview || n.image?.url || '',
+  //       };
+  //     });
+
+  //     const result = { subCollections };
+  //     this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
+  //     return result;
+  //   } catch (error: any) {
+  //     this.logger.error(
+  //       'Failed to fetch sub-collections:',
+  //       error?.message ?? error,
+  //     );
+  //     throw new InternalServerErrorException('Failed to fetch sub-collections');
+  //   }
+  // }
 
   //CUSTOMERS//
   async getCustomers(query: CustomerQueryDto) {
@@ -1886,127 +1971,128 @@ export class ShopifyService {
   // }
 
   /**
- * Get sale products (variant.compare_at_price > variant.price)
- * Paginates through the entire active catalog so no sale items are missed.
- */
-async getSaleProducts(limit = 40, minDiscount = 0, brand?: string) {
-  const normalizedBrand = String(brand ?? '')
-    .trim()
-    .toLowerCase();
-  const cacheKey = `sale:${limit}:${minDiscount}:${normalizedBrand}`;
-  const cached = this.cache.get<any>(cacheKey);
-  if (cached) return cached;
+   * Get sale products (variant.compare_at_price > variant.price)
+   * Paginates through the entire active catalog so no sale items are missed.
+   */
+  async getSaleProducts(limit = 40, minDiscount = 0, brand?: string) {
+    const normalizedBrand = String(brand ?? '')
+      .trim()
+      .toLowerCase();
+    const cacheKey = `sale:${limit}:${minDiscount}:${normalizedBrand}`;
+    const cached = this.cache.get<any>(cacheKey);
+    if (cached) return cached;
 
-  try {
-    const client = new this.shopify.clients.Rest({ session: this.session });
+    try {
+      const client = new this.shopify.clients.Rest({ session: this.session });
 
-    // --- Paginate through ALL active products ---
-    const allProducts: any[] = [];
-    let pageInfo: string | undefined = undefined;
-    const MAX_PAGES = 20; // safety cap: 20 * 250 = 5,000 products
+      // --- Paginate through ALL active products ---
+      const allProducts: any[] = [];
+      let pageInfo: string | undefined = undefined;
+      const MAX_PAGES = 20; // safety cap: 20 * 250 = 5,000 products
 
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const query: Record<string, any> = { limit: 250 };
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const query: Record<string, any> = { limit: 250 };
 
-      // On the first request, filter by status. On subsequent requests,
-      // Shopify REQUIRES that only `page_info` and `limit` be sent.
-      if (pageInfo) {
-        query.page_info = pageInfo;
-      } else {
-        query.status = 'active';
-      }
-
-      const res: any = await this.enqueueShopifyRequest(() =>
-        client.get({ path: 'products', query }),
-      );
-
-      const pageProducts = res.body?.products ?? [];
-      allProducts.push(...pageProducts);
-
-      // Shopify returns pagination info in the Link header.
-      // The shopify-api-node client exposes it as res.pageInfo.nextPage.query.page_info
-      const nextPageInfo =
-        res?.pageInfo?.nextPage?.query?.page_info ??
-        res?.pageInfo?.nextPageUrl ??
-        null;
-
-      if (!nextPageInfo || pageProducts.length < 250) break;
-      pageInfo = nextPageInfo;
-    }
-
-    this.logger.log(
-      `Fetched ${allProducts.length} active products for sale scan`,
-    );
-
-    // --- Filter + compute best discount (unchanged logic) ---
-    const sale = allProducts
-      .filter((p: any) => {
-        if (!normalizedBrand) return true;
-
-        const handle = String(p?.handle ?? '')
-          .trim()
-          .toLowerCase();
-
-        const firstPart = handle.split('-')[0];
-        return firstPart === normalizedBrand;
-      })
-      .map((p: any) => {
-        const variants = Array.isArray(p?.variants) ? p.variants : [];
-
-        let bestDiscountPct = -1;
-        let bestPrice: number | null = null;
-        let bestCompareAt: number | null = null;
-
-        for (const v of variants) {
-          const price = Number(v?.price);
-          const compareAt = Number(v?.compare_at_price);
-
-          if (!Number.isFinite(price) || !Number.isFinite(compareAt)) continue;
-          if (compareAt <= price) continue;
-
-          const pct = ((compareAt - price) / compareAt) * 100;
-
-          if (pct > bestDiscountPct) {
-            bestDiscountPct = pct;
-            bestPrice = price;
-            bestCompareAt = compareAt;
-          }
+        // On the first request, filter by status. On subsequent requests,
+        // Shopify REQUIRES that only `page_info` and `limit` be sent.
+        if (pageInfo) {
+          query.page_info = pageInfo;
+        } else {
+          query.status = 'active';
         }
 
-        if (bestDiscountPct < 0) return null;
-        if (bestDiscountPct < minDiscount) return null;
+        const res: any = await this.enqueueShopifyRequest(() =>
+          client.get({ path: 'products', query }),
+        );
 
-        return {
-          ...p,
-          sale_data: {
-            best_price: bestPrice,
-            best_compare_at_price: bestCompareAt,
-            discount_percent: Number(bestDiscountPct.toFixed(2)),
-          },
-        };
-      })
-      .filter(Boolean)
-      .sort(
-        (a: any, b: any) =>
-          (b.sale_data?.discount_percent ?? 0) -
-          (a.sale_data?.discount_percent ?? 0),
-      )
-      .slice(0, limit);
+        const pageProducts = res.body?.products ?? [];
+        allProducts.push(...pageProducts);
 
-    const result = {
-      sale,
-      count: sale.length,
-      minDiscount,
-      brand: normalizedBrand || null,
-      source: 'compare_at_price',
-    };
-    this.cache.set(cacheKey, result, this.CACHE_TTL.sale);
-    return result;
-  } catch (error) {
-    this.logger.error('Failed to fetch sale products:', error.message);
-    throw new InternalServerErrorException('Failed to fetch sale products');
+        // Shopify returns pagination info in the Link header.
+        // The shopify-api-node client exposes it as res.pageInfo.nextPage.query.page_info
+        const nextPageInfo =
+          res?.pageInfo?.nextPage?.query?.page_info ??
+          res?.pageInfo?.nextPageUrl ??
+          null;
+
+        if (!nextPageInfo || pageProducts.length < 250) break;
+        pageInfo = nextPageInfo;
+      }
+
+      this.logger.log(
+        `Fetched ${allProducts.length} active products for sale scan`,
+      );
+
+      // --- Filter + compute best discount (unchanged logic) ---
+      const sale = allProducts
+        .filter((p: any) => {
+          if (!normalizedBrand) return true;
+
+          const handle = String(p?.handle ?? '')
+            .trim()
+            .toLowerCase();
+
+          const firstPart = handle.split('-')[0];
+          return firstPart === normalizedBrand;
+        })
+        .map((p: any) => {
+          const variants = Array.isArray(p?.variants) ? p.variants : [];
+
+          let bestDiscountPct = -1;
+          let bestPrice: number | null = null;
+          let bestCompareAt: number | null = null;
+
+          for (const v of variants) {
+            const price = Number(v?.price);
+            const compareAt = Number(v?.compare_at_price);
+
+            if (!Number.isFinite(price) || !Number.isFinite(compareAt))
+              continue;
+            if (compareAt <= price) continue;
+
+            const pct = ((compareAt - price) / compareAt) * 100;
+
+            if (pct > bestDiscountPct) {
+              bestDiscountPct = pct;
+              bestPrice = price;
+              bestCompareAt = compareAt;
+            }
+          }
+
+          if (bestDiscountPct < 0) return null;
+          if (bestDiscountPct < minDiscount) return null;
+
+          return {
+            ...p,
+            sale_data: {
+              best_price: bestPrice,
+              best_compare_at_price: bestCompareAt,
+              discount_percent: Number(bestDiscountPct.toFixed(2)),
+            },
+          };
+        })
+        .filter(Boolean)
+        .sort(
+          (a: any, b: any) =>
+            (b.sale_data?.discount_percent ?? 0) -
+            (a.sale_data?.discount_percent ?? 0),
+        )
+        .slice(0, limit);
+
+      const result = {
+        sale,
+        count: sale.length,
+        minDiscount,
+        brand: normalizedBrand || null,
+        source: 'compare_at_price',
+      };
+      this.cache.set(cacheKey, result, this.CACHE_TTL.sale);
+      return result;
+    } catch (error) {
+      this.logger.error('Failed to fetch sale products:', error.message);
+      throw new InternalServerErrorException('Failed to fetch sale products');
+    }
   }
-}
 
   // ==================== VARIANTS ====================
 

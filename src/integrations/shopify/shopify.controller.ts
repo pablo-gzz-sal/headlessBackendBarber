@@ -109,37 +109,7 @@ export class ShopifyController {
     return this.shopifyService.getCollections(query);
   }
 
-  @Get('collections/:id')
-  @ApiOperation({
-    summary: 'Get collection by ID',
-    description: 'Fetch a single collection by its ID',
-  })
-  @ApiParam({ name: 'id', description: 'Collection ID', type: String })
-  @ApiResponse({
-    status: 200,
-    description: 'Collection retrieved successfully',
-  })
-  @ApiResponse({ status: 404, description: 'Collection not found' })
-  async getCollectionById(@Param('id') id: string) {
-    return this.shopifyService.getCollectionById(id);
-  }
-
-  @Get('collections/:id/products')
-  @ApiOperation({
-    summary: 'Get collection products',
-    description: 'Fetch all products in a collection',
-  })
-  @ApiParam({ name: 'id', description: 'Collection ID', type: String })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  @ApiResponse({ status: 200, description: 'Products retrieved successfully' })
-  async getCollectionProducts(
-    @Param('id') id: string,
-    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
-  ) {
-    return this.shopifyService.getCollectionProducts(id, limit);
-  }
-
-  @Get('collections/sub-collections')
+    @Get('collections/sub-collections')
   @ApiOperation({
     summary: 'Get summary info for multiple sub-collections by IDs',
   })
@@ -172,6 +142,58 @@ export class ShopifyController {
       .map((s) => s.trim())
       .filter(Boolean);
     return this.shopifyService.getSubCollectionsSummary(idList);
+  }
+
+    @Get('collections/by-handle/:handle')
+  @ApiOperation({
+    summary: 'Get collection by handle',
+    description:
+      'Get collection using URL-friendly handle (e.g., "joeys-faves", "sale", "bestsellers")',
+  })
+  @ApiParam({
+    name: 'handle',
+    description: 'Collection handle',
+    type: String,
+    example: 'joeys-faves',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Collection retrieved successfully',
+  })
+  @ApiResponse({ status: 404, description: 'Collection not found' })
+  async getCollectionByHandle(@Param('handle') handle: string) {
+    return this.shopifyService.getCollectionByHandle(handle);
+  }
+
+
+  @Get('collections/:id')
+  @ApiOperation({
+    summary: 'Get collection by ID',
+    description: 'Fetch a single collection by its ID',
+  })
+  @ApiParam({ name: 'id', description: 'Collection ID', type: String })
+  @ApiResponse({
+    status: 200,
+    description: 'Collection retrieved successfully',
+  })
+  @ApiResponse({ status: 404, description: 'Collection not found' })
+  async getCollectionById(@Param('id') id: string) {
+    return this.shopifyService.getCollectionById(id);
+  }
+
+  @Get('collections/:id/products')
+  @ApiOperation({
+    summary: 'Get collection products',
+    description: 'Fetch all products in a collection',
+  })
+  @ApiParam({ name: 'id', description: 'Collection ID', type: String })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiResponse({ status: 200, description: 'Products retrieved successfully' })
+  async getCollectionProducts(
+    @Param('id') id: string,
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
+  ) {
+    return this.shopifyService.getCollectionProducts(id, limit);
   }
 
   // ==================== CUSTOMERS ====================
@@ -466,27 +488,6 @@ export class ShopifyController {
   }
 
   // ==================== FEATURED SECTIONS ====================
-
-  @Get('collections/by-handle/:handle')
-  @ApiOperation({
-    summary: 'Get collection by handle',
-    description:
-      'Get collection using URL-friendly handle (e.g., "joeys-faves", "sale", "bestsellers")',
-  })
-  @ApiParam({
-    name: 'handle',
-    description: 'Collection handle',
-    type: String,
-    example: 'joeys-faves',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Collection retrieved successfully',
-  })
-  @ApiResponse({ status: 404, description: 'Collection not found' })
-  async getCollectionByHandle(@Param('handle') handle: string) {
-    return this.shopifyService.getCollectionByHandle(handle);
-  }
 
   @Post('featured-products')
   @ApiOperation({
