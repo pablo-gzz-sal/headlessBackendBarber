@@ -151,60 +151,6 @@ export class ShopifyService {
     }
   }
 
-  // async getProductById(productId: string) {
-  //   try {
-  //     const client = new this.shopify.clients.Rest({ session: this.session });
-
-  //     this.logger.log(`Fetching product with ID: ${productId}`);
-
-  //     const response = await client.get({ path: `products/${productId}` });
-
-  //     if (!response.body['product']) {
-  //       throw new NotFoundException(`Product with ID ${productId} not found`);
-  //     }
-
-  //     return response.body['product'];
-  //   } catch (error) {
-  //     if (error instanceof NotFoundException) throw error;
-  //     this.logger.error('Failed to fetch product:', error.message);
-  //     throw new InternalServerErrorException('Failed to fetch product details');
-  //   }
-  // }
-
-  async getProductById(productId: string) {
-    try {
-      const client = new this.shopify.clients.Rest({ session: this.session });
-
-      this.logger.log(`Fetching product with ID: ${productId}`);
-
-      const [productResponse, metafieldsResponse] = await Promise.all([
-        client.get({ path: `products/${productId}` }),
-        client.get({ path: `products/${productId}/metafields` }),
-      ]);
-
-      if (!productResponse.body['product']) {
-        throw new NotFoundException(`Product with ID ${productId} not found`);
-      }
-
-      const product = productResponse.body['product'];
-      const metafields: any[] = metafieldsResponse.body['metafields'] ?? [];
-
-      const metafieldMap = metafields.reduce(
-        (acc, mf) => {
-          acc[mf.key] = mf.value;
-          return acc;
-        },
-        {} as Record<string, string>,
-      );
-
-      return { ...product, metafields: metafieldMap };
-    } catch (error) {
-      if (error instanceof NotFoundException) throw error;
-      this.logger.error('Failed to fetch product:', error.message);
-      throw new InternalServerErrorException('Failed to fetch product details');
-    }
-  }
-
   async searchProducts(query: string, limit: number = 20) {
     try {
       const term = (query || '').trim();
@@ -348,6 +294,157 @@ export class ShopifyService {
     } catch (error: any) {
       this.logger.error('Failed to search products:', error?.message || error);
       throw new InternalServerErrorException('Failed to search products');
+    }
+  }
+
+  async getProductById(productId: string) {
+    try {
+      const client = new this.shopify.clients.Rest({ session: this.session });
+      this.logger.log(`Fetching product with ID: ${productId}`);
+
+      const [productResponse, metafieldsResponse] = await Promise.all([
+        client.get({ path: `products/${productId}` }),
+        client.get({ path: `products/${productId}/metafields` }),
+      ]);
+
+      if (!productResponse.body['product']) {
+        throw new NotFoundException(`Product with ID ${productId} not found`);
+      }
+
+      const product = productResponse.body['product'];
+      const metafields: any[] = metafieldsResponse.body['metafields'] ?? [];
+
+      const metafieldMap = metafields.reduce(
+        (acc, mf) => {
+          acc[mf.key] = mf.value;
+          return acc;
+        },
+        {} as Record<string, string>,
+      );
+
+      // Media (images + videos) only available via GraphQL
+      const media = await this.getProductMedia(productId);
+
+      return { ...product, metafields: metafieldMap, media };
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
+      this.logger.error('Failed to fetch product:', error.message);
+      throw new InternalServerErrorException('Failed to fetch product details');
+    }
+  }
+
+  private async getProductMedia(productId: string): Promise<any[]> {
+    try {
+      const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+      const accessToken = this.configService.get<string>(
+        'SHOPIFY_ACCESS_TOKEN',
+      );
+
+      const normalizedDomain = shopDomain!
+        .replace(/^https?:\/\//, '')
+        .replace(/\/$/, '');
+
+      const endpoint = `https://${normalizedDomain}/admin/api/2026-01/graphql.json`;
+
+      const query = `
+      query getProductMedia($id: ID!) {
+        product(id: $id) {
+          media(first: 20) {
+            edges {
+              node {
+                mediaContentType
+                ... on MediaImage {
+                  id
+                  image { url altText width height }
+                  preview { image { url } }
+                }
+                ... on Video {
+                  id
+                  sources { url mimeType format height width }
+                  preview { image { url } }
+                }
+                ... on ExternalVideo {
+                  id
+                  embeddedUrl
+                  preview { image { url } }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': accessToken!,
+        },
+        body: JSON.stringify({
+          query,
+          variables: { id: `gid://shopify/Product/${productId}` },
+        }),
+      });
+
+      const json = await response.json();
+
+      if (json.errors?.length) {
+        this.logger.warn(
+          `GraphQL media errors: ${JSON.stringify(json.errors)}`,
+        );
+        return [];
+      }
+
+      const edges = json?.data?.product?.media?.edges ?? [];
+
+      return edges
+        .map((edge: any) => {
+          const node = edge.node;
+          const type = node.mediaContentType; // IMAGE | VIDEO | EXTERNAL_VIDEO
+
+          if (type === 'IMAGE') {
+            return {
+              media_type: 'image',
+              src: node.image?.url ?? '',
+              alt: node.image?.altText ?? '',
+              width: node.image?.width,
+              height: node.image?.height,
+              preview_image: {
+                src: node.preview?.image?.url ?? node.image?.url ?? '',
+              },
+            };
+          }
+
+          if (type === 'VIDEO') {
+            // Prefer mp4, fallback to first available
+            const mp4 = node.sources?.find(
+              (s: any) => s.mimeType === 'video/mp4',
+            );
+            const best = mp4 ?? node.sources?.[0];
+            return {
+              media_type: 'video',
+              src: best?.url ?? '',
+              sources: node.sources ?? [],
+              preview_image: { src: node.preview?.image?.url ?? '' },
+            };
+          }
+
+          if (type === 'EXTERNAL_VIDEO') {
+            return {
+              media_type: 'external_video',
+              src: node.embeddedUrl ?? '',
+              preview_image: { src: node.preview?.image?.url ?? '' },
+            };
+          }
+
+          return null;
+        })
+        .filter(Boolean);
+    } catch (error: any) {
+      // Non-fatal — product still loads, just without media
+      this.logger.warn(`Failed to fetch product media: ${error?.message}`);
+      return [];
     }
   }
 
@@ -867,23 +964,27 @@ export class ShopifyService {
   }
 
   async getSubCollectionsSummary(ids: string[]) {
-  if (!ids?.length) return { subCollections: [] };
+    if (!ids?.length) return { subCollections: [] };
 
-  const cacheKey = `subcollections:${[...ids].sort().join(',')}`;
-  const cached = this.cache.get<any>(cacheKey);
-  if (cached) return cached;
+    const cacheKey = `subcollections:${[...ids].sort().join(',')}`;
+    const cached = this.cache.get<any>(cacheKey);
+    if (cached) return cached;
 
-  try {
-    const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
-    const accessToken = this.configService.get<string>('SHOPIFY_ACCESS_TOKEN');
+    try {
+      const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+      const accessToken = this.configService.get<string>(
+        'SHOPIFY_ACCESS_TOKEN',
+      );
 
-    const normalizedDomain = shopDomain!.replace(/^https?:\/\//, '').replace(/\/$/, '');
-    const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
+      const normalizedDomain = shopDomain!
+        .replace(/^https?:\/\//, '')
+        .replace(/\/$/, '');
+      const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
 
-    const gids = ids.map((id) => `gid://shopify/Collection/${id}`);
-    this.logger.log(`GIDs being sent: ${JSON.stringify(gids)}`);
+      const gids = ids.map((id) => `gid://shopify/Collection/${id}`);
+      this.logger.log(`GIDs being sent: ${JSON.stringify(gids)}`);
 
-    const graphqlQuery = `
+      const graphqlQuery = `
       query getSubCollections($ids: [ID!]!) {
         nodes(ids: $ids) {
           ... on Collection {
@@ -901,55 +1002,62 @@ export class ShopifyService {
       }
     `;
 
-    this.logger.log(`Fetching sub-collections for ${gids.length} GIDs`);
+      this.logger.log(`Fetching sub-collections for ${gids.length} GIDs`);
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Shopify-Access-Token': accessToken!,
-      },
-      body: JSON.stringify({ query: graphqlQuery, variables: { ids: gids } }),
-    });
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': accessToken!,
+        },
+        body: JSON.stringify({ query: graphqlQuery, variables: { ids: gids } }),
+      });
 
-    const json = await response.json();
-    if (json.errors?.length) {
-      this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
-      throw new Error('Shopify GraphQL returned errors');
+      const json = await response.json();
+      if (json.errors?.length) {
+        this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
+        throw new Error('Shopify GraphQL returned errors');
+      }
+
+      const nodes = (json?.data?.nodes ?? []).filter(Boolean);
+      this.logger.log(`Resolved ${nodes.length} sub-collection nodes`);
+
+      const subCollections = nodes.map((n: any) => {
+        const metafields = (n.metafields?.edges ?? []).map((e: any) => e.node);
+
+        // Case-insensitive lookup — Shopify lowercases keys in REST, GraphQL varies
+        const getVal = (key: string) => {
+          const lower = key.toLowerCase();
+          return (
+            metafields.find((m: any) => m?.key?.toLowerCase() === lower)
+              ?.value ?? ''
+          );
+        };
+
+        const overviewUrl =
+          getVal('overviewCollection') || getVal('overviewcollection');
+        const imageUrl = overviewUrl || n.image?.url || '';
+
+        return {
+          id: String(n.legacyResourceId),
+          handle: n.handle,
+          title: n.title,
+          description: n.descriptionHtml ?? '',
+          imageUrl,
+        };
+      });
+
+      const result = { subCollections };
+      this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
+      return result;
+    } catch (error: any) {
+      this.logger.error(
+        'Failed to fetch sub-collections:',
+        error?.message ?? error,
+      );
+      throw new InternalServerErrorException('Failed to fetch sub-collections');
     }
-
-    const nodes = (json?.data?.nodes ?? []).filter(Boolean);
-    this.logger.log(`Resolved ${nodes.length} sub-collection nodes`);
-
-    const subCollections = nodes.map((n: any) => {
-      const metafields = (n.metafields?.edges ?? []).map((e: any) => e.node);
-
-      // Case-insensitive lookup — Shopify lowercases keys in REST, GraphQL varies
-      const getVal = (key: string) => {
-        const lower = key.toLowerCase();
-        return metafields.find((m: any) => m?.key?.toLowerCase() === lower)?.value ?? '';
-      };
-
-      const overviewUrl = getVal('overviewCollection') || getVal('overviewcollection');
-      const imageUrl = overviewUrl || n.image?.url || '';
-
-      return {
-        id: String(n.legacyResourceId),
-        handle: n.handle,
-        title: n.title,
-        description: n.descriptionHtml ?? '',
-        imageUrl,
-      };
-    });
-
-    const result = { subCollections };
-    this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
-    return result;
-  } catch (error: any) {
-    this.logger.error('Failed to fetch sub-collections:', error?.message ?? error);
-    throw new InternalServerErrorException('Failed to fetch sub-collections');
   }
-}
 
   // async getSubCollectionsSummary(ids: string[]) {
   //   if (!ids?.length) return { subCollections: [] };
