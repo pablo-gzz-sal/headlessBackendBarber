@@ -548,7 +548,7 @@ export class ShopifyService {
             (e: any) => e.node,
           );
           const metafields = rawMetafields.filter((m: any) =>
-            ['bannerimage', 'footerbrand', 'overviewcollection'].includes(
+            ['bannerimage', 'footerbrand', 'overviewcollection', 'whywelove'].includes(
               m.key?.toLowerCase(),
             ),
           );
@@ -574,6 +574,7 @@ export class ShopifyService {
               metafields,
               'overviewcollection',
             ),
+            whyWeLove: this.getMetafieldValue(metafields, 'whywelove'),
           });
 
           cursor = edge.cursor;
