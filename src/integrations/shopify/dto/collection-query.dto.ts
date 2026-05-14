@@ -7,14 +7,13 @@ export class CollectionQueryDto {
     description: 'Number of collections to return', 
     minimum: 1, 
     maximum: 250,
-    default: 50 
   })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(250)
-  limit?: number = 50;
+  limit?: number;
 
   @ApiPropertyOptional({ 
     description: 'Collection title filter' 

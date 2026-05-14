@@ -450,45 +450,40 @@ export class ShopifyService {
 
   // ==================== COLLECTIONS ====================
 
-  async getCollections(query: CollectionQueryDto) {
-    const cacheKey = 'collections:all';
-    const cached = this.cache.get<any>(cacheKey);
-    if (cached) {
-      this.logger.log('getCollections: cache hit');
-      return cached;
+async getCollections(query: CollectionQueryDto) {
+  const cacheKey = 'collections:all';
+  const cached = this.cache.get<any>(cacheKey);
+  if (cached) {
+    this.logger.log('getCollections: cache hit');
+    return cached;
+  }
+
+  try {
+    const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+    const accessToken = this.configService.get<string>('SHOPIFY_ACCESS_TOKEN');
+
+    if (!shopDomain || !accessToken) {
+      throw new Error('Missing Shopify configuration (SHOPIFY_STORE_DOMAIN or SHOPIFY_ACCESS_TOKEN)');
     }
 
-    try {
-      const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
-      const accessToken = this.configService.get<string>(
-        'SHOPIFY_ACCESS_TOKEN',
-      );
+    const normalizedDomain = shopDomain
+      .replace(/^https?:\/\//, '')
+      .replace(/\/$/, '');
+    const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
 
-      if (!shopDomain || !accessToken) {
-        throw new Error(
-          'Missing Shopify configuration (SHOPIFY_STORE_DOMAIN or SHOPIFY_ACCESS_TOKEN)',
-        );
-      }
+    const limit = query?.limit ?? 250;
+    let allCollections: any[] = [];
+    let hasNextPage = true;
+    let cursor: string | null = null;
 
-      const normalizedDomain = shopDomain
-        .replace(/^https?:\/\//, '')
-        .replace(/\/$/, '');
-      const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
+    while (hasNextPage && allCollections.length < limit) {
+      const batchSize = Math.min(50, limit - allCollections.length);
+      const afterClause = cursor ? `, after: "${cursor}"` : '';
 
-      const limit = query.limit || 200;
-      let allCollections: any[] = [];
-      let hasNextPage = true;
-      let cursor: string | null = null;
-
-      while (hasNextPage && allCollections.length < limit) {
-        const batchSize = Math.min(50, limit - allCollections.length);
-        const afterClause = cursor ? `, after: "${cursor}"` : '';
-
-        const graphqlQuery = `
+      const graphqlQuery = `
         {
           collections(first: ${batchSize}${afterClause}) {
             edges {
-              cursor
               node {
                 id
                 legacyResourceId
@@ -517,126 +512,117 @@ export class ShopifyService {
             }
             pageInfo {
               hasNextPage
+              endCursor
             }
           }
         }
       `;
 
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shopify-Access-Token': accessToken,
-          },
-          body: JSON.stringify({ query: graphqlQuery }),
-        });
-
-        const json = await response.json();
-
-        if (json.errors?.length) {
-          this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
-          throw new Error('Shopify GraphQL returned errors');
-        }
-
-        const edges = json?.data?.collections?.edges ?? [];
-
-        for (const edge of edges) {
-          const node = edge.node;
-          const hasRuleSet = node.ruleSet?.rules?.length > 0;
-
-          const rawMetafields = (node.metafields?.edges ?? []).map(
-            (e: any) => e.node,
-          );
-          const metafields = rawMetafields.filter((m: any) =>
-            ['bannerimage', 'footerbrand', 'overviewcollection', 'whywelove'].includes(
-              m.key?.toLowerCase(),
-            ),
-          );
-
-          allCollections.push({
-            id: String(node.legacyResourceId),
-            title: node.title,
-            handle: node.handle,
-            image: node.image
-              ? {
-                  src: node.image.url,
-                  alt: node.image.altText,
-                  width: node.image.width,
-                  height: node.image.height,
-                }
-              : null,
-            collection_type: hasRuleSet ? 'smart' : 'custom',
-            brandKey: brandKeyFromTitle(node),
-            metafields,
-            bannerImage: this.getMetafieldValue(metafields, 'bannerimage'),
-            footerBrand: this.getMetafieldValue(metafields, 'footerbrand'),
-            overviewCollection: this.getMetafieldValue(
-              metafields,
-              'overviewcollection',
-            ),
-            whyWeLove: this.getMetafieldValue(metafields, 'whywelove'),
-          });
-
-          cursor = edge.cursor;
-        }
-
-        hasNextPage = json?.data?.collections?.pageInfo?.hasNextPage ?? false;
-      }
-
-      this.logger.log(
-        `Fetched ${allCollections.length} collections via GraphQL`,
-      );
-
-      const grouped = allCollections.reduce((acc: any, c: any) => {
-        acc[c.brandKey] ??= {
-          brandKey: c.brandKey,
-          brandTitle: c.title.split(/[-|:–—]/)[0].trim(),
-          collections: [],
-        };
-        acc[c.brandKey].collections.push(c);
-        return acc;
-      }, {});
-
-      const brandGroups = Object.values(grouped).map((g: any) => {
-        const heroCollection =
-          g.collections.find((x: any) => x.bannerImage) ??
-          g.collections.find((x: any) => x.footerBrand) ??
-          g.collections.find((x: any) => x.image) ??
-          g.collections[0];
-
-        return {
-          brandKey: g.brandKey,
-          brandTitle: g.brandTitle,
-          hero: heroCollection,
-          collectionIds: g.collections.map((x: any) => x.id),
-          collectionHandles: g.collections.map((x: any) => x.handle),
-          collectionTitles: g.collections.map((x: any) => x.title),
-          collectionImages: g.collections.map(
-            (x: any) => x.overviewCollection || x.image?.src || '',
-          ),
-          count: g.collections.length,
-        };
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': accessToken,
+        },
+        body: JSON.stringify({ query: graphqlQuery }),
       });
 
-      const result = {
-        collections: allCollections,
-        brandGroups,
-        count: allCollections.length,
-      };
-      this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
-      this.logger.log(
-        `getCollections: cached ${allCollections.length} collections for 5 min`,
-      );
+      const json = await response.json();
 
-      return result;
-    } catch (error: any) {
-      this.logger.error(
-        'Failed to fetch collections:',
-        error?.message ?? error,
-      );
-      throw new InternalServerErrorException('Failed to fetch collections');
+      if (json.errors?.length) {
+        this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
+        throw new Error('Shopify GraphQL returned errors');
+      }
+
+      const edges = json?.data?.collections?.edges ?? [];
+
+      for (const edge of edges) {
+        const node = edge.node;
+        const hasRuleSet = node.ruleSet?.rules?.length > 0;
+
+        const rawMetafields = (node.metafields?.edges ?? []).map((e: any) => e.node);
+        const metafields = rawMetafields.filter((m: any) =>
+          ['bannerimage', 'footerbrand', 'overviewcollection', 'whywelove'].includes(
+            m.key?.toLowerCase(),
+          ),
+        );
+
+        allCollections.push({
+          id: String(node.legacyResourceId),
+          title: node.title,
+          handle: node.handle,
+          image: node.image
+            ? {
+                src: node.image.url,
+                alt: node.image.altText,
+                width: node.image.width,
+                height: node.image.height,
+              }
+            : null,
+          collection_type: hasRuleSet ? 'smart' : 'custom',
+          brandKey: brandKeyFromTitle(node),
+          metafields,
+          bannerImage: this.getMetafieldValue(metafields, 'bannerimage'),
+          footerBrand: this.getMetafieldValue(metafields, 'footerbrand'),
+          overviewCollection: this.getMetafieldValue(metafields, 'overviewcollection'),
+          whyWeLove: this.getMetafieldValue(metafields, 'whywelove'),
+        });
+      }
+
+      hasNextPage = json?.data?.collections?.pageInfo?.hasNextPage ?? false;
+      cursor = json?.data?.collections?.pageInfo?.endCursor ?? null;
+
+      this.logger.log(`Fetched batch: ${edges.length} collections, total so far: ${allCollections.length}, hasNextPage: ${hasNextPage}`);
     }
+
+    this.logger.log(`Fetched ${allCollections.length} collections via GraphQL`);
+
+    const grouped = allCollections.reduce((acc: any, c: any) => {
+      acc[c.brandKey] ??= {
+        brandKey: c.brandKey,
+        brandTitle: c.title.split(/[-|:–—]/)[0].trim(),
+        collections: [],
+      };
+      acc[c.brandKey].collections.push(c);
+      return acc;
+    }, {});
+
+    const brandGroups = Object.values(grouped).map((g: any) => {
+      const heroCollection =
+        g.collections.find((x: any) => x.bannerImage) ??
+        g.collections.find((x: any) => x.footerBrand) ??
+        g.collections.find((x: any) => x.image) ??
+        g.collections[0];
+
+      return {
+        brandKey: g.brandKey,
+        brandTitle: g.brandTitle,
+        hero: heroCollection,
+        collectionIds: g.collections.map((x: any) => x.id),
+        collectionHandles: g.collections.map((x: any) => x.handle),
+        collectionTitles: g.collections.map((x: any) => x.title),
+        collectionImages: g.collections.map(
+          (x: any) => x.overviewCollection || x.image?.src || '',
+        ),
+        count: g.collections.length,
+      };
+    });
+
+    const result = {
+      collections: allCollections,
+      brandGroups,
+      count: allCollections.length,
+    };
+
+    this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
+    this.logger.log(`getCollections: cached ${allCollections.length} collections for 5 min`);
+
+    return result;
+  } catch (error: any) {
+    this.logger.error('Failed to fetch collections:', error?.message ?? error);
+    throw new InternalServerErrorException('Failed to fetch collections');
   }
+}
 
   private async getCollectionImageMetafields(
     collectionId: string,
@@ -737,28 +723,143 @@ export class ShopifyService {
     if (cached) return cached;
 
     try {
-      const client = new this.shopify.clients.Rest({ session: this.session });
-
-      this.logger.log(`Fetching products for collection: ${collectionId}`);
-
-      const response = await this.enqueueShopifyRequest(() =>
-        client.get({
-          path: `collections/${collectionId}/products`,
-          query: { limit },
-        }),
+      const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+      const accessToken = this.configService.get<string>(
+        'SHOPIFY_ACCESS_TOKEN',
       );
 
-      const products = (response as any).body['products'] || [];
+      const normalizedDomain = shopDomain!
+        .replace(/^https?:\/\//, '')
+        .replace(/\/$/, '');
+      const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
+
+      const gid = `gid://shopify/Collection/${collectionId}`;
+
+      const graphqlQuery = `
+      query getCollectionProducts($id: ID!, $first: Int!) {
+        collection(id: $id) {
+          products(first: $first) {
+            edges {
+              node {
+                id
+                legacyResourceId
+                title
+                handle
+                vendor
+                tags
+                featuredImage { url altText }
+                images(first: 1) { edges { node { url altText } } }
+                variants(first: 1) {
+                  edges {
+                    node {
+                      id
+                      price
+                      compareAtPrice
+                    }
+                  }
+                }
+                filterTag: metafield(namespace: "custom", key: "filterTag") {
+                  value
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shopify-Access-Token': accessToken!,
+        },
+        body: JSON.stringify({
+          query: graphqlQuery,
+          variables: { id: gid, first: limit },
+        }),
+      });
+
+      const json = await response.json();
+
+      if (json.errors?.length) {
+        this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
+        throw new Error('Shopify GraphQL returned errors');
+      }
+
+      const edges = json?.data?.collection?.products?.edges ?? [];
+
+      const products = edges.map((edge: any) => {
+        const node = edge.node;
+        const firstVariant = node.variants?.edges?.[0]?.node;
+
+        return {
+          id: String(node.legacyResourceId),
+          title: node.title,
+          handle: node.handle,
+          vendor: node.vendor,
+          tags: node.tags ?? [],
+          image: {
+            src:
+              node.featuredImage?.url ??
+              node.images?.edges?.[0]?.node?.url ??
+              '',
+            alt: node.featuredImage?.altText ?? node.title ?? '',
+          },
+          variants: firstVariant
+            ? [
+                {
+                  id: firstVariant.id,
+                  price: firstVariant.price,
+                  compare_at_price: firstVariant.compareAtPrice,
+                },
+              ]
+            : [],
+          price: firstVariant?.price ?? null,
+          filterTag: node.filterTag?.value ?? null, // ← the new field
+        };
+      });
+
       const result = { products, count: products.length };
       this.cache.set(cacheKey, result, this.CACHE_TTL.products);
       return result;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error('Failed to fetch collection products:', error.message);
       throw new InternalServerErrorException(
         'Failed to fetch collection products',
       );
     }
   }
+  
+
+  // async getCollectionProducts(collectionId: string, limit: number = 50) {
+  //   const cacheKey = `products:col:${collectionId}:${limit}`;
+  //   const cached = this.cache.get<any>(cacheKey);
+  //   if (cached) return cached;
+
+  //   try {
+  //     const client = new this.shopify.clients.Rest({ session: this.session });
+
+  //     this.logger.log(`Fetching products for collection: ${collectionId}`);
+
+  //     const response = await this.enqueueShopifyRequest(() =>
+  //       client.get({
+  //         path: `collections/${collectionId}/products`,
+  //         query: { limit },
+  //       }),
+  //     );
+
+  //     const products = (response as any).body['products'] || [];
+  //     const result = { products, count: products.length };
+  //     this.cache.set(cacheKey, result, this.CACHE_TTL.products);
+  //     return result;
+  //   } catch (error) {
+  //     this.logger.error('Failed to fetch collection products:', error.message);
+  //     throw new InternalServerErrorException(
+  //       'Failed to fetch collection products',
+  //     );
+  //   }
+  // }
 
   // async getCollectionByHandle(handle: string) {
   //   try {
