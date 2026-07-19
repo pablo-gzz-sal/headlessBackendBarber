@@ -48,7 +48,23 @@ class TtlCache {
   delete(key: string): void {
     this.store.delete(key);
   }
+
+  deleteByPrefix(prefix: string): number {
+    let n = 0;
+    for (const key of this.store.keys()) {
+      if (key.startsWith(prefix)) {
+        this.store.delete(key);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  clear(): void {
+    this.store.clear();
+  }
 }
+
 
 @Injectable()
 export class ShopifyService {
@@ -130,7 +146,10 @@ export class ShopifyService {
     try {
       const client = new this.shopify.clients.Rest({ session: this.session });
 
-      const params: any = { limit: query.limit || 10 };
+      const params: any = {
+        limit: query.limit || 10,
+        status: query.status ?? 'active',
+      };
 
       if (query.status) params.status = query.status;
       if (query.collectionId) params.collection_id = query.collectionId;
@@ -140,7 +159,7 @@ export class ShopifyService {
       );
 
       const response = await client.get({ path: 'products', query: params });
-      const products = response.body['products'] || [];
+      const products = this.onlyActive(response.body['products'] || []);
 
       return { products, count: products.length };
     } catch (error) {
@@ -276,12 +295,12 @@ export class ShopifyService {
           },
           variants: firstVariant
             ? [
-                {
-                  id: firstVariant.id,
-                  price: firstVariant.price,
-                  compare_at_price: firstVariant.compareAtPrice,
-                },
-              ]
+              {
+                id: firstVariant.id,
+                price: firstVariant.price,
+                compare_at_price: firstVariant.compareAtPrice,
+              },
+            ]
             : [],
           price: firstVariant?.price ?? null,
         };
@@ -312,6 +331,9 @@ export class ShopifyService {
       }
 
       const product = productResponse.body['product'];
+      if (!this.isActiveProduct(product)) {
+        throw new NotFoundException(`Product with ID ${productId} is not available`);
+      }
       const metafields: any[] = metafieldsResponse.body['metafields'] ?? [];
 
       const metafieldMap = metafields.reduce(
@@ -448,39 +470,64 @@ export class ShopifyService {
     }
   }
 
-  // ==================== COLLECTIONS ====================
-
-async getCollections(query: CollectionQueryDto) {
-  const cacheKey = 'collections:all';
-  const cached = this.cache.get<any>(cacheKey);
-  if (cached) {
-    this.logger.log('getCollections: cache hit');
-    return cached;
+  private isActiveProduct(p: any): boolean {
+    const status = p?.status;
+    if (status === undefined || status === null) {
+      this.logger.warn(
+        `isActiveProduct: no status field on product ${p?.id} (${p?.title}) — payload not filterable`,
+      );
+      return true;
+    }
+    return String(status).toLowerCase() === 'active';
   }
 
-  try {
-    const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
-    const accessToken = this.configService.get<string>('SHOPIFY_ACCESS_TOKEN');
+  private onlyActive<T>(products: T[] = []): T[] {
+    if (!Array.isArray(products)) return [];
+    return products.filter((p) => this.isActiveProduct(p));
+  }
 
-    if (!shopDomain || !accessToken) {
-      throw new Error('Missing Shopify configuration (SHOPIFY_STORE_DOMAIN or SHOPIFY_ACCESS_TOKEN)');
+  /** Bust product-bearing caches. Called by POST /shopify/cache/invalidate. */
+  invalidateProductCaches(): void {
+    this.cache.deleteByPrefix('products:');
+    this.cache.deleteByPrefix('sale:');
+    this.cache.deleteByPrefix('bestsellers:');
+    this.cache.deleteByPrefix('collections:');
+    this.logger.log('Product caches invalidated');
+  }
+
+  // ==================== COLLECTIONS ====================
+
+  async getCollections(query: CollectionQueryDto) {
+    const cacheKey = 'collections:all';
+    const cached = this.cache.get<any>(cacheKey);
+    if (cached) {
+      this.logger.log('getCollections: cache hit');
+      return cached;
     }
 
-    const normalizedDomain = shopDomain
-      .replace(/^https?:\/\//, '')
-      .replace(/\/$/, '');
-    const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
+    try {
+      const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
+      const accessToken = this.configService.get<string>('SHOPIFY_ACCESS_TOKEN');
 
-    const limit = query?.limit ?? 250;
-    let allCollections: any[] = [];
-    let hasNextPage = true;
-    let cursor: string | null = null;
+      if (!shopDomain || !accessToken) {
+        throw new Error('Missing Shopify configuration (SHOPIFY_STORE_DOMAIN or SHOPIFY_ACCESS_TOKEN)');
+      }
 
-    while (hasNextPage && allCollections.length < limit) {
-      const batchSize = Math.min(50, limit - allCollections.length);
-      const afterClause = cursor ? `, after: "${cursor}"` : '';
+      const normalizedDomain = shopDomain
+        .replace(/^https?:\/\//, '')
+        .replace(/\/$/, '');
+      const endpoint = `https://${normalizedDomain}/admin/api/2024-10/graphql.json`;
 
-      const graphqlQuery = `
+      const limit = query?.limit ?? 250;
+      let allCollections: any[] = [];
+      let hasNextPage = true;
+      let cursor: string | null = null;
+
+      while (hasNextPage && allCollections.length < limit) {
+        const batchSize = Math.min(50, limit - allCollections.length);
+        const afterClause = cursor ? `, after: "${cursor}"` : '';
+
+        const graphqlQuery = `
         {
           collections(first: ${batchSize}${afterClause}) {
             edges {
@@ -518,111 +565,111 @@ async getCollections(query: CollectionQueryDto) {
         }
       `;
 
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Shopify-Access-Token': accessToken,
-        },
-        body: JSON.stringify({ query: graphqlQuery }),
-      });
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Access-Token': accessToken,
+          },
+          body: JSON.stringify({ query: graphqlQuery }),
+        });
 
-      const json = await response.json();
+        const json = await response.json();
 
-      if (json.errors?.length) {
-        this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
-        throw new Error('Shopify GraphQL returned errors');
-      }
+        if (json.errors?.length) {
+          this.logger.error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
+          throw new Error('Shopify GraphQL returned errors');
+        }
 
-      const edges = json?.data?.collections?.edges ?? [];
+        const edges = json?.data?.collections?.edges ?? [];
 
-      for (const edge of edges) {
-        const node = edge.node;
-        const hasRuleSet = node.ruleSet?.rules?.length > 0;
+        for (const edge of edges) {
+          const node = edge.node;
+          const hasRuleSet = node.ruleSet?.rules?.length > 0;
 
-        const rawMetafields = (node.metafields?.edges ?? []).map((e: any) => e.node);
-        const metafields = rawMetafields.filter((m: any) =>
-          ['bannerimage', 'footerbrand', 'overviewcollection', 'whywelove'].includes(
-            m.key?.toLowerCase(),
-          ),
-        );
+          const rawMetafields = (node.metafields?.edges ?? []).map((e: any) => e.node);
+          const metafields = rawMetafields.filter((m: any) =>
+            ['bannerimage', 'footerbrand', 'overviewcollection', 'whywelove'].includes(
+              m.key?.toLowerCase(),
+            ),
+          );
 
-        allCollections.push({
-          id: String(node.legacyResourceId),
-          title: node.title,
-          handle: node.handle,
-          image: node.image
-            ? {
+          allCollections.push({
+            id: String(node.legacyResourceId),
+            title: node.title,
+            handle: node.handle,
+            image: node.image
+              ? {
                 src: node.image.url,
                 alt: node.image.altText,
                 width: node.image.width,
                 height: node.image.height,
               }
-            : null,
-          collection_type: hasRuleSet ? 'smart' : 'custom',
-          brandKey: brandKeyFromTitle(node),
-          metafields,
-          bannerImage: this.getMetafieldValue(metafields, 'bannerimage'),
-          footerBrand: this.getMetafieldValue(metafields, 'footerbrand'),
-          overviewCollection: this.getMetafieldValue(metafields, 'overviewcollection'),
-          whyWeLove: this.getMetafieldValue(metafields, 'whywelove'),
-        });
+              : null,
+            collection_type: hasRuleSet ? 'smart' : 'custom',
+            brandKey: brandKeyFromTitle(node),
+            metafields,
+            bannerImage: this.getMetafieldValue(metafields, 'bannerimage'),
+            footerBrand: this.getMetafieldValue(metafields, 'footerbrand'),
+            overviewCollection: this.getMetafieldValue(metafields, 'overviewcollection'),
+            whyWeLove: this.getMetafieldValue(metafields, 'whywelove'),
+          });
+        }
+
+        hasNextPage = json?.data?.collections?.pageInfo?.hasNextPage ?? false;
+        cursor = json?.data?.collections?.pageInfo?.endCursor ?? null;
+
+        this.logger.log(`Fetched batch: ${edges.length} collections, total so far: ${allCollections.length}, hasNextPage: ${hasNextPage}`);
       }
 
-      hasNextPage = json?.data?.collections?.pageInfo?.hasNextPage ?? false;
-      cursor = json?.data?.collections?.pageInfo?.endCursor ?? null;
+      this.logger.log(`Fetched ${allCollections.length} collections via GraphQL`);
 
-      this.logger.log(`Fetched batch: ${edges.length} collections, total so far: ${allCollections.length}, hasNextPage: ${hasNextPage}`);
+      const grouped = allCollections.reduce((acc: any, c: any) => {
+        acc[c.brandKey] ??= {
+          brandKey: c.brandKey,
+          brandTitle: c.title.split(/[-|:–—]/)[0].trim(),
+          collections: [],
+        };
+        acc[c.brandKey].collections.push(c);
+        return acc;
+      }, {});
+
+      const brandGroups = Object.values(grouped).map((g: any) => {
+        const heroCollection =
+          g.collections.find((x: any) => x.bannerImage) ??
+          g.collections.find((x: any) => x.footerBrand) ??
+          g.collections.find((x: any) => x.image) ??
+          g.collections[0];
+
+        return {
+          brandKey: g.brandKey,
+          brandTitle: g.brandTitle,
+          hero: heroCollection,
+          collectionIds: g.collections.map((x: any) => x.id),
+          collectionHandles: g.collections.map((x: any) => x.handle),
+          collectionTitles: g.collections.map((x: any) => x.title),
+          collectionImages: g.collections.map(
+            (x: any) => x.overviewCollection || x.image?.src || '',
+          ),
+          count: g.collections.length,
+        };
+      });
+
+      const result = {
+        collections: allCollections,
+        brandGroups,
+        count: allCollections.length,
+      };
+
+      this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
+      this.logger.log(`getCollections: cached ${allCollections.length} collections for 5 min`);
+
+      return result;
+    } catch (error: any) {
+      this.logger.error('Failed to fetch collections:', error?.message ?? error);
+      throw new InternalServerErrorException('Failed to fetch collections');
     }
-
-    this.logger.log(`Fetched ${allCollections.length} collections via GraphQL`);
-
-    const grouped = allCollections.reduce((acc: any, c: any) => {
-      acc[c.brandKey] ??= {
-        brandKey: c.brandKey,
-        brandTitle: c.title.split(/[-|:–—]/)[0].trim(),
-        collections: [],
-      };
-      acc[c.brandKey].collections.push(c);
-      return acc;
-    }, {});
-
-    const brandGroups = Object.values(grouped).map((g: any) => {
-      const heroCollection =
-        g.collections.find((x: any) => x.bannerImage) ??
-        g.collections.find((x: any) => x.footerBrand) ??
-        g.collections.find((x: any) => x.image) ??
-        g.collections[0];
-
-      return {
-        brandKey: g.brandKey,
-        brandTitle: g.brandTitle,
-        hero: heroCollection,
-        collectionIds: g.collections.map((x: any) => x.id),
-        collectionHandles: g.collections.map((x: any) => x.handle),
-        collectionTitles: g.collections.map((x: any) => x.title),
-        collectionImages: g.collections.map(
-          (x: any) => x.overviewCollection || x.image?.src || '',
-        ),
-        count: g.collections.length,
-      };
-    });
-
-    const result = {
-      collections: allCollections,
-      brandGroups,
-      count: allCollections.length,
-    };
-
-    this.cache.set(cacheKey, result, this.CACHE_TTL.collections);
-    this.logger.log(`getCollections: cached ${allCollections.length} collections for 5 min`);
-
-    return result;
-  } catch (error: any) {
-    this.logger.error('Failed to fetch collections:', error?.message ?? error);
-    throw new InternalServerErrorException('Failed to fetch collections');
   }
-}
 
   private async getCollectionImageMetafields(
     collectionId: string,
@@ -720,7 +767,11 @@ async getCollections(query: CollectionQueryDto) {
   async getCollectionProducts(collectionId: string, limit: number = 50) {
     const cacheKey = `products:col:${collectionId}:${limit}`;
     const cached = this.cache.get<any>(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      this.logger.log(`⚡ getCollectionProducts CACHE HIT ${collectionId}`);
+      return cached;
+    }
+    this.logger.log(`▶ getCollectionProducts ${collectionId} limit=${limit}`);
 
     try {
       const shopDomain = this.configService.get<string>('SHOPIFY_STORE_DOMAIN');
@@ -735,6 +786,9 @@ async getCollections(query: CollectionQueryDto) {
 
       const gid = `gid://shopify/Collection/${collectionId}`;
 
+      // Over-fetch so archived products filtered out below don't leave us short
+      const fetchCount = Math.min(250, Math.max(limit * 2, limit + 10));
+
       const graphqlQuery = `
       query getCollectionProducts($id: ID!, $first: Int!) {
         collection(id: $id) {
@@ -747,6 +801,7 @@ async getCollections(query: CollectionQueryDto) {
                 handle
                 vendor
                 tags
+                status
                 featuredImage { url altText }
                 images(first: 1) { edges { node { url altText } } }
                 variants(first: 1) {
@@ -776,7 +831,7 @@ async getCollections(query: CollectionQueryDto) {
         },
         body: JSON.stringify({
           query: graphqlQuery,
-          variables: { id: gid, first: limit },
+          variables: { id: gid, first: fetchCount },
         }),
       });
 
@@ -789,36 +844,54 @@ async getCollections(query: CollectionQueryDto) {
 
       const edges = json?.data?.collection?.products?.edges ?? [];
 
-      const products = edges.map((edge: any) => {
-        const node = edge.node;
-        const firstVariant = node.variants?.edges?.[0]?.node;
+      const products = edges
+        .map((edge: any) => edge.node)
+        .filter((node: any) => {
+          // Explicit check — do NOT fall back to isActiveProduct() here.
+          // If `status` is ever missing we want to drop the product, not keep it.
+          const ok = String(node?.status ?? '').toUpperCase() === 'ACTIVE';
+          if (!ok) {
+            this.logger.log(
+              `  ✂ dropped ${node?.title} (status=${node?.status})`,
+            );
+          }
+          return ok;
+        })
+        .slice(0, limit)
+        .map((node: any) => {
+          const firstVariant = node.variants?.edges?.[0]?.node;
 
-        return {
-          id: String(node.legacyResourceId),
-          title: node.title,
-          handle: node.handle,
-          vendor: node.vendor,
-          tags: node.tags ?? [],
-          image: {
-            src:
-              node.featuredImage?.url ??
-              node.images?.edges?.[0]?.node?.url ??
-              '',
-            alt: node.featuredImage?.altText ?? node.title ?? '',
-          },
-          variants: firstVariant
-            ? [
+          return {
+            id: String(node.legacyResourceId),
+            title: node.title,
+            handle: node.handle,
+            vendor: node.vendor,
+            tags: node.tags ?? [],
+            status: node.status,
+            image: {
+              src:
+                node.featuredImage?.url ??
+                node.images?.edges?.[0]?.node?.url ??
+                '',
+              alt: node.featuredImage?.altText ?? node.title ?? '',
+            },
+            variants: firstVariant
+              ? [
                 {
                   id: firstVariant.id,
                   price: firstVariant.price,
                   compare_at_price: firstVariant.compareAtPrice,
                 },
               ]
-            : [],
-          price: firstVariant?.price ?? null,
-          filterTag: node.filterTag?.value ?? null, // ← the new field
-        };
-      });
+              : [],
+            price: firstVariant?.price ?? null,
+            filterTag: node.filterTag?.value ?? null,
+          };
+        });
+
+      this.logger.log(
+        `◀ getCollectionProducts ${collectionId}: ${edges.length} raw → ${products.length} after filter`,
+      );
 
       const result = { products, count: products.length };
       this.cache.set(cacheKey, result, this.CACHE_TTL.products);
@@ -830,7 +903,7 @@ async getCollections(query: CollectionQueryDto) {
       );
     }
   }
-  
+
 
   // async getCollectionProducts(collectionId: string, limit: number = 50) {
   //   const cacheKey = `products:col:${collectionId}:${limit}`;
@@ -1023,11 +1096,11 @@ async getCollections(query: CollectionQueryDto) {
         description: node.descriptionHtml,
         image: node.image
           ? {
-              src: node.image.url,
-              alt: node.image.altText,
-              width: node.image.width,
-              height: node.image.height,
-            }
+            src: node.image.url,
+            alt: node.image.altText,
+            width: node.image.width,
+            height: node.image.height,
+          }
           : null,
         collection_type: hasRuleSet ? 'smart' : 'custom',
         metafields,
@@ -1571,7 +1644,7 @@ async getCollections(query: CollectionQueryDto) {
         query: { limit: query.limit || 4 },
       });
 
-      const recommendations = response.body['products'] || [];
+      const recommendations = this.onlyActive(response.body['products'] || []);
       return {
         recommendations,
         count: recommendations.length,
@@ -1607,7 +1680,7 @@ async getCollections(query: CollectionQueryDto) {
         path: 'products',
         query: {
           product_type: product.product_type,
-          limit: limit + 1, // Get one extra to exclude current product
+          limit: limit + 5, // Get one extra to exclude current product
         },
       });
 
@@ -1839,6 +1912,7 @@ async getCollections(query: CollectionQueryDto) {
         session: this.session,
       });
 
+
       const normalizedTag = (tag ?? '').trim();
       if (!normalizedTag) throw new BadRequestException('Tag is required');
 
@@ -1873,9 +1947,7 @@ async getCollections(query: CollectionQueryDto) {
       const products: any[] = [];
       let after: string | null = null;
 
-      this.logger.log(
-        `GraphQL: fetching products with ${query} (target=${target})`,
-      );
+      this.logger.log(`▶ getProductsByTag query="${query}" target=${target}`);
 
       while (products.length < target) {
         const variables = {
@@ -1898,7 +1970,7 @@ async getCollections(query: CollectionQueryDto) {
         after = pageInfo.endCursor;
         if (!after) break;
       }
-
+      this.logger.log(`◀ getProductsByTag "${tag}": ${products.length} products`);
       return { products, count: products.length };
     } catch (error: any) {
       this.logger.error(
@@ -2232,9 +2304,10 @@ async getCollections(query: CollectionQueryDto) {
       this.logger.log(
         `Fetched ${allProducts.length} active products for sale scan`,
       );
+      const activeProducts = this.onlyActive(allProducts);
 
       // --- Filter + compute best discount (unchanged logic) ---
-      const sale = allProducts
+      const sale = activeProducts
         .filter((p: any) => {
           if (!normalizedBrand) return true;
 

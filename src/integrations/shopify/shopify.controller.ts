@@ -49,6 +49,17 @@ export class ShopifyController {
     return this.shopifyService.healthCheck();
   }
 
+  @Post('cache/invalidate')
+  @ApiOperation({
+    summary: 'Invalidate product caches',
+    description: 'Clears cached product/collection/sale data so archived products disappear immediately',
+  })
+  @ApiResponse({ status: 201, description: 'Caches invalidated' })
+  async invalidateCaches() {
+    this.shopifyService.invalidateProductCaches();
+    return { ok: true, invalidatedAt: new Date().toISOString() };
+  }
+
   // ==================== PRODUCTS ====================
 
   @Get('products')
