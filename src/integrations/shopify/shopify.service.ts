@@ -326,6 +326,7 @@ export class ShopifyService {
         client.get({ path: `products/${productId}/metafields` }),
       ]);
 
+
       if (!productResponse.body['product']) {
         throw new NotFoundException(`Product with ID ${productId} not found`);
       }
@@ -346,8 +347,22 @@ export class ShopifyService {
 
       // Media (images + videos) only available via GraphQL
       const media = await this.getProductMedia(productId);
-
-      return { ...product, metafields: metafieldMap, media };
+      const variants = (product.variants ?? []).map((v: any) => ({
+        ...v,
+        available: this.isVariantAvailableRest(v),
+      }));
+      const inStock = variants.some((v: any) => v.available);
+      return {
+        ...product,
+        variants,
+        in_stock: inStock,
+        total_inventory: variants.reduce(
+          (sum: number, v: any) => sum + Number(v.inventory_quantity ?? 0),
+          0,
+        ),
+        metafields: metafieldMap,
+        media,
+      };
     } catch (error) {
       if (error instanceof NotFoundException) throw error;
       this.logger.error('Failed to fetch product:', error.message);
@@ -479,6 +494,19 @@ export class ShopifyService {
       return true;
     }
     return String(status).toLowerCase() === 'active';
+  }
+
+  /** REST variant → availability. Handles untracked + backorder cases. */
+  private isVariantAvailableRest(v: any): boolean {
+    const tracked = v?.inventory_management != null;
+    if (!tracked) return true;                       // Shopify isn't tracking it
+    if (v?.inventory_policy === 'continue') return true;  // oversell allowed
+    return Number(v?.inventory_quantity ?? 0) > 0;
+  }
+
+  /** GraphQL variant → availability. `availableForSale` already folds in all three rules. */
+  private isVariantAvailableGql(v: any): boolean {
+    return v?.availableForSale === true;
   }
 
   private onlyActive<T>(products: T[] = []): T[] {
@@ -810,6 +838,8 @@ export class ShopifyService {
                       id
                       price
                       compareAtPrice
+                              availableForSale
+        inventoryQuantity
                     }
                   }
                 }
@@ -859,7 +889,13 @@ export class ShopifyService {
         })
         .slice(0, limit)
         .map((node: any) => {
+          const variantNodes = (node.variants?.edges ?? []).map((e: any) => e.node);
           const firstVariant = node.variants?.edges?.[0]?.node;
+
+          const availableVariants = variantNodes.filter((v: any) =>
+            this.isVariantAvailableGql(v),
+          );
+          const inStock = availableVariants.length > 0;
 
           return {
             id: String(node.legacyResourceId),
@@ -868,6 +904,9 @@ export class ShopifyService {
             vendor: node.vendor,
             tags: node.tags ?? [],
             status: node.status,
+            in_stock: inStock,
+            total_inventory: node.totalInventory ?? null,
+            tracks_inventory: node.tracksInventory ?? false,
             image: {
               src:
                 node.featuredImage?.url ??
@@ -875,15 +914,13 @@ export class ShopifyService {
                 '',
               alt: node.featuredImage?.altText ?? node.title ?? '',
             },
-            variants: firstVariant
-              ? [
-                {
-                  id: firstVariant.id,
-                  price: firstVariant.price,
-                  compare_at_price: firstVariant.compareAtPrice,
-                },
-              ]
-              : [],
+            variants: variantNodes.map((v: any) => ({
+              id: v.id,
+              price: v.price,
+              compare_at_price: v.compareAtPrice,
+              available: this.isVariantAvailableGql(v),
+              inventory_quantity: v.inventoryQuantity ?? null,
+            })),
             price: firstVariant?.price ?? null,
             filterTag: node.filterTag?.value ?? null,
           };
@@ -2407,6 +2444,9 @@ export class ShopifyService {
           option2: v.option2,
           option3: v.option3,
           inventory_quantity: v.inventory_quantity,
+          inventory_policy: v.inventory_policy,
+          inventory_management: v.inventory_management,
+          available: this.isVariantAvailableRest(v),
           image_id: v.image_id,
           admin_graphql_api_id: v.admin_graphql_api_id,
         })),
