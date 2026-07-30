@@ -10,10 +10,10 @@ export class ContactService {
   private transporter: Transporter;
 
   constructor(private readonly config: ConfigService) {
-    const host = this.config.get<string>('SMTP_HOST');
-    const port = Number(this.config.get<string>('SMTP_PORT') ?? 587);
-    const user = this.config.get<string>('SMTP_USER');
-    const pass = this.config.get<string>('SMTP_PASS');
+    const host = this.cfg('SMTP_HOST');
+    const port = Number(this.cfg('SMTP_PORT') ?? 587);
+    const user = this.cfg('SMTP_USER');
+    const pass = this.cfg('SMTP_PASS');
 
     if (!host || !user || !pass) {
       this.logger.warn('Missing SMTP env vars: SMTP_HOST/SMTP_USER/SMTP_PASS');
@@ -27,9 +27,27 @@ export class ContactService {
     });
   }
 
+  /** Reads a config value and treats empty/whitespace-only strings as missing. */
+  private cfg(key: string): string | undefined {
+    const value = this.config.get<string>(key);
+    const trimmed = typeof value === 'string' ? value.trim() : value;
+    return trimmed ? trimmed : undefined;
+  }
+
   async sendContactEmail(dto: ContactDto) {
-    const to = this.config.get<string>('CONTACT_TO_EMAIL') ?? 'info@JosephBattisti.com';
-    const from = this.config.get<string>('CONTACT_FROM_EMAIL') ?? this.config.get<string>('SMTP_USER') ?? to;
+    // NOTE: `?? fallback` only fires on null/undefined, so a blank env var
+    // (CONTACT_TO_EMAIL=) would leave `to` empty and nodemailer would reject
+    // with "No recipients defined". `cfg()` treats blank values as missing.
+    const to =
+      this.cfg('CONTACT_TO_EMAIL') ?? this.cfg('SMTP_USER') ?? 'info@JosephBattisti.com';
+    const from = this.cfg('CONTACT_FROM_EMAIL') ?? this.cfg('SMTP_USER') ?? to;
+
+    if (!to) {
+      this.logger.error(
+        'No recipient configured. Set CONTACT_TO_EMAIL (or SMTP_USER) in the environment.',
+      );
+      throw new InternalServerErrorException('Failed to send message');
+    }
 
     try {
       const subject = `New Contact Form Message — ${dto.name}`;
