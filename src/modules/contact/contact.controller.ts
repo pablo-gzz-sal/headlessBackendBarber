@@ -10,13 +10,17 @@ export class ContactController {
 
   @Post()
   @HttpCode(200)
-  @ApiOperation({ summary: 'Send contact form message (emails info@JosephBattisti.com)' })
+  @ApiOperation({
+    summary:
+      'Send contact form message (emails info@JosephBattisti.com, plus a confirmation to the sender)',
+  })
   @ApiBody({ type: ContactDto })
   @ApiResponse({
     status: 200,
-    description: 'Message accepted and email sent',
+    description:
+      'Message accepted and email sent. `confirmationSent` is false when the auto-reply to the sender failed — the salon still received the message.',
     schema: {
-      example: { ok: true, messageId: '<smtp-message-id>' },
+      example: { ok: true, messageId: '<smtp-message-id>', confirmationSent: true },
     },
   })
   @ApiResponse({

@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 import { ContactDto } from './dto/contact.dto';
+import { LOGO_PNG_BASE64 } from './assets/logo.asset';
+import { buildConfirmationEmail, escapeHtml, LOGO_CID } from './templates/confirmation.template';
 
 @Injectable()
 export class ContactService {
@@ -77,19 +79,47 @@ export class ContactService {
         replyTo: dto.email, // so you can "Reply" directly to the sender
       });
 
-      return { ok: true, messageId: info.messageId };
+      const confirmationSent = await this.sendConfirmationEmail(dto, from);
+
+      return { ok: true, messageId: info.messageId, confirmationSent };
     } catch (err: any) {
       this.logger.error(err?.message || err);
       throw new InternalServerErrorException('Failed to send message');
     }
   }
-}
 
-function escapeHtml(str: string) {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+  /**
+   * Auto-reply to the person who filled in the form.
+   *
+   * Deliberately never throws: the salon already has the message at this point,
+   * so a bounced confirmation must not turn a successful submission into a 500
+   * and prompt the visitor to send everything again.
+   */
+  private async sendConfirmationEmail(dto: ContactDto, from: string): Promise<boolean> {
+    try {
+      const { subject, html, text } = buildConfirmationEmail(dto);
+
+      await this.transporter.sendMail({
+        to: dto.email,
+        from,
+        subject,
+        text,
+        html,
+        replyTo: from,
+        attachments: [
+          {
+            filename: 'joseph-battisti.png',
+            content: Buffer.from(LOGO_PNG_BASE64, 'base64'),
+            cid: LOGO_CID, // referenced as <img src="cid:..."> in the template
+            contentDisposition: 'inline',
+          },
+        ],
+      });
+
+      return true;
+    } catch (err: any) {
+      this.logger.error(`Confirmation email to ${dto.email} failed: ${err?.message || err}`);
+      return false;
+    }
+  }
 }
