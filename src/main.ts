@@ -19,7 +19,16 @@ async function bootstrap() {
   
   // Enable CORS with specific options
   app.enableCors({
-    origin: ['http://localhost:4200', 'http://localhost:3000', 'https://josephbattisti-q6dqe.ondigitalocean.app', 'http://127.0.0.1:4200/','https://barber-frontend-kura.onrender.com'], // Add your frontend URLs
+    origin: [
+      'http://localhost:4200',
+      'http://localhost:3000',
+      // Render staging URL. Kept so the pre-domain deploy stays testable after go-live.
+      'https://barber-frontend-kura.onrender.com',
+      // Production. Both hosts are listed because CORS matches the exact origin, so a
+      // www -> apex redirect that the browser has cached still needs www to be allowed.
+      'https://josephbattisti.com',
+      'https://www.josephbattisti.com',
+    ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
     allowedHeaders: 'Content-Type, Accept, Authorization',
