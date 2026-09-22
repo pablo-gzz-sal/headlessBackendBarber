@@ -53,6 +53,13 @@ export class ContactService {
   }
 
   async sendContactEmail(dto: ContactDto) {
+    // Honeypot filled in = bot. Pretend it worked so it has no reason to adapt,
+    // but send nothing.
+    if (dto.website?.trim()) {
+      this.logger.warn(`Honeypot triggered, submission dropped: ${dto.email}`);
+      return { ok: true, confirmationSent: true };
+    }
+
     // NOTE: `?? fallback` only fires on null/undefined, so a blank env var
     // (CONTACT_TO_EMAIL=) would leave `to` empty and nodemailer would reject
     // with "No recipients defined". `cfg()` treats blank values as missing.
