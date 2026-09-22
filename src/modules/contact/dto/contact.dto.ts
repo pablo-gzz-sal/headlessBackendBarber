@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiHideProperty, ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class ContactDto {
@@ -38,4 +38,14 @@ export class ContactDto {
   @MinLength(5)
   @MaxLength(2000)
   message!: string;
+
+  /**
+   * Honeypot. The frontend renders this field hidden from people, so only bots
+   * that fill in every input send a value. Hidden from the docs on purpose.
+   */
+  @ApiHideProperty()
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  website?: string;
 }
