@@ -16,12 +16,21 @@ import { ContactModule } from './modules/contact/contact.module';
     }),
 
     // Rate limiting
-    ThrottlerModule.forRoot([
-      {
-        ttl: 60000,
-        limit: 100, 
-      },
-    ]),
+    ThrottlerModule.forRoot({
+      throttlers: [
+        {
+          ttl: 60000,
+          limit: 100,
+        },
+      ],
+      // On Render, requests pass Cloudflare and then Render's proxy, so req.ip
+      // (trust proxy = 1) is a Cloudflare edge IP that changes between requests and
+      // every visitor gets scattered across random buckets. Cloudflare sets
+      // CF-Connecting-IP to the real client and overwrites any client-sent value.
+      // Locally the header is absent and req.ip is used.
+      getTracker: (req: Record<string, any>) =>
+        (req.headers?.['cf-connecting-ip'] as string | undefined) ?? req.ip,
+    }),
 
 
     ShopifyModule,
