@@ -1,5 +1,3 @@
-import { ContactDto } from '../dto/contact.dto';
-
 /**
  * Content-ID for the inlined wordmark. Referenced from the HTML as
  * <img src="cid:...">, attached by ContactService.
@@ -58,18 +56,17 @@ export function escapeHtml(str: string): string {
     .replace(/'/g, '&#039;');
 }
 
-/** First name only — "Thank you, Joseph." reads better than the full name. */
-function firstName(name: string): string {
-  return name.trim().split(/\s+/)[0] || name.trim();
-}
-
 /**
  * Auto-reply sent to whoever submitted the contact form.
+ *
+ * Must contain NO submitter-controlled text (name, message, phone). The
+ * recipient address is whatever the form was given, so echoing input would let
+ * bots use this endpoint to send their own content from the salon's domain.
  *
  * Table-based layout with inline styles throughout: Gmail strips <style>
  * blocks in some contexts and Outlook ignores flexbox/grid entirely.
  */
-export function buildConfirmationEmail(dto: ContactDto): {
+export function buildConfirmationEmail(): {
   subject: string;
   html: string;
   text: string;
@@ -132,7 +129,7 @@ export function buildConfirmationEmail(dto: ContactDto): {
                   Message Received
                 </div>
                 <h1 style="margin: 18px 0 0; font-family: ${SERIF}; font-weight: normal; font-size: 30px; line-height: 38px; color: #111111; text-align: center;">
-                  Thank you, ${escapeHtml(firstName(dto.name))}.
+                  Thank you for reaching out.
                 </h1>
                 <p style="margin: 18px 0 0; font-family: ${SANS}; font-size: 15px; line-height: 26px; color: #4a4a4a; text-align: center;">
                   Your message has reached the salon and a member of our team will be
@@ -140,26 +137,6 @@ export function buildConfirmationEmail(dto: ContactDto): {
                   ready to book, have a question about our services, or need
                   personalized recommendations, we are here to help.
                 </p>
-              </td>
-            </tr>
-
-            <!-- Their message, echoed back -->
-            <tr>
-              <td style="padding: 34px 40px 0;">
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #faf9f7; border-left: 2px solid #111111;">
-                  <tr>
-                    <td style="padding: 22px 24px;">
-                      <div style="font-family: ${SANS}; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: #6b6b6b;">
-                        What you sent us
-                      </div>
-                      <p style="margin: 14px 0 0; font-family: ${SANS}; font-size: 14px; line-height: 24px; color: #111111; white-space: pre-wrap;">${escapeHtml(dto.message)}</p>
-                      <p style="margin: 16px 0 0; font-family: ${SANS}; font-size: 13px; line-height: 22px; color: #6b6b6b;">
-                        ${escapeHtml(dto.name)}<br />
-                        ${escapeHtml(dto.email)}${dto.phone ? `<br />${escapeHtml(dto.phone)}` : ''}
-                      </p>
-                    </td>
-                  </tr>
-                </table>
               </td>
             </tr>
 
@@ -233,11 +210,8 @@ export function buildConfirmationEmail(dto: ContactDto): {
 </html>`;
 
   const text =
-    `Thank you, ${firstName(dto.name)}.\n\n` +
+    `Thank you for reaching out.\n\n` +
     `Your message has reached the salon and a member of our team will be in touch shortly.\n\n` +
-    `WHAT YOU SENT US\n` +
-    `${dto.message}\n\n` +
-    `${dto.name}\n${dto.email}${dto.phone ? `\n${dto.phone}` : ''}\n\n` +
     `In a hurry? Book your appointment online: ${BOOKING_URL}\n\n` +
     `SALON HOURS\n` +
     HOURS.map((h) => `${h.day}: ${h.hours}`).join('\n') +

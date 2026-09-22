@@ -1,5 +1,6 @@
 import { Body, Controller, HttpCode, Post } from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { ContactDto } from './dto/contact.dto';
 import { ContactService } from './contact.service';
 
@@ -10,6 +11,9 @@ export class ContactController {
 
   @Post()
   @HttpCode(200)
+  // Much tighter than the global 100/min: every call sends mail from the salon's
+  // domain, and bots were using it to hit random addresses (bounce backscatter).
+  @Throttle({ default: { limit: 3, ttl: 10 * 60 * 1000 } })
   @ApiOperation({
     summary:
       'Send contact form message (emails info@JosephBattisti.com, plus a confirmation to the sender)',
@@ -33,6 +37,10 @@ export class ContactController {
         error: 'Unprocessable Entity',
       },
     },
+  })
+  @ApiResponse({
+    status: 429,
+    description: 'Too many submissions from this IP (3 per 10 minutes)',
   })
   @ApiResponse({
     status: 500,

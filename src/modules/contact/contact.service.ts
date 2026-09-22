@@ -6,10 +6,26 @@ import { ContactDto } from './dto/contact.dto';
 import { LOGO_PNG_BASE64 } from './assets/logo.asset';
 import { buildConfirmationEmail, escapeHtml, LOGO_CID } from './templates/confirmation.template';
 
+/**
+ * Anything that looks like a link. Real salon enquiries almost never contain
+ * one; spam nearly always does. Only gates the auto-reply — the salon still
+ * receives the message.
+ */
+const LINK_PATTERN =
+  /https?:\/\/|www\.|\b[a-z0-9-]+\.(com|net|org|info|biz|io|co|me|ru|cn|xyz|top|link|click|shop|store|online|site|app)\b/i;
+
+/** Fallback when CONTACT_AUTOREPLY_DAILY_LIMIT is not set. */
+const DEFAULT_AUTOREPLY_DAILY_LIMIT = 25;
+
 @Injectable()
 export class ContactService {
   private readonly logger = new Logger(ContactService.name);
   private transporter: Transporter;
+
+  // In-memory, so it resets on restart/redeploy (and when a free Render
+  // instance spins down). Good enough as a circuit breaker for a burst.
+  private autoReplyDay = '';
+  private autoRepliesToday = 0;
 
   constructor(private readonly config: ConfigService) {
     const host = this.cfg('SMTP_HOST');
@@ -79,13 +95,43 @@ export class ContactService {
         replyTo: dto.email, // so you can "Reply" directly to the sender
       });
 
-      const confirmationSent = await this.sendConfirmationEmail(dto, from);
+      const confirmationSent = this.shouldSendConfirmation(dto)
+        ? await this.sendConfirmationEmail(dto, from)
+        : false;
 
       return { ok: true, messageId: info.messageId, confirmationSent };
     } catch (err: any) {
       this.logger.error(err?.message || err);
       throw new InternalServerErrorException('Failed to send message');
     }
+  }
+
+  /**
+   * Gate for the auto-reply. The recipient is whatever address was typed into
+   * the form, so every confirmation is mail from the salon's domain to a
+   * stranger. Skipping it never affects the salon's copy of the message.
+   */
+  private shouldSendConfirmation(dto: ContactDto): boolean {
+    if (LINK_PATTERN.test(`${dto.name} ${dto.message}`)) {
+      this.logger.warn(`Auto-reply skipped (message contains a link): ${dto.email}`);
+      return false;
+    }
+
+    const today = new Date().toISOString().slice(0, 10); // UTC day
+    if (today !== this.autoReplyDay) {
+      this.autoReplyDay = today;
+      this.autoRepliesToday = 0;
+    }
+
+    const limit =
+      Number(this.cfg('CONTACT_AUTOREPLY_DAILY_LIMIT')) || DEFAULT_AUTOREPLY_DAILY_LIMIT;
+    if (this.autoRepliesToday >= limit) {
+      this.logger.warn(`Auto-reply skipped (daily limit of ${limit} reached): ${dto.email}`);
+      return false;
+    }
+
+    this.autoRepliesToday++;
+    return true;
   }
 
   /**
@@ -97,7 +143,7 @@ export class ContactService {
    */
   private async sendConfirmationEmail(dto: ContactDto, from: string): Promise<boolean> {
     try {
-      const { subject, html, text } = buildConfirmationEmail(dto);
+      const { subject, html, text } = buildConfirmationEmail();
 
       await this.transporter.sendMail({
         to: dto.email,
