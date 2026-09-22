@@ -1,13 +1,20 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import * as compression from 'compression';
 import helmet from 'helmet';
 import * as cookieParser from 'cookie-parser';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Render terminates TLS at its proxy, so without this req.ip is the proxy's
+  // address and the ThrottlerGuard would lump every visitor into one bucket.
+  // 1 = trust exactly one hop; a higher/`true` value would let clients spoof
+  // X-Forwarded-For and dodge rate limits.
+  app.set('trust proxy', 1);
 
   app.use(cookieParser());
   

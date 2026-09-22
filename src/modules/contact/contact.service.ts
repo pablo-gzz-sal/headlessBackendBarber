@@ -97,7 +97,7 @@ export class ContactService {
    */
   private async sendConfirmationEmail(dto: ContactDto, from: string): Promise<boolean> {
     try {
-      const { subject, html, text } = buildConfirmationEmail(dto);
+      const { subject, html, text } = buildConfirmationEmail();
 
       await this.transporter.sendMail({
         to: dto.email,
